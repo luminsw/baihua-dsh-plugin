@@ -17,7 +17,7 @@ const STATUS_TIMEOUT_MS = 20_000;
 const MAX_TAIL = 16_000;
 
 /** 长操作允许的命令（避免任意命令执行面）。 */
-const LONG_ACTIONS = new Set(["build", "update", "up", "deploy"]);
+const LONG_ACTIONS = new Set(["build", "update", "up", "deploy", "build-restart"]);
 /** 快速操作允许的命令。 */
 const QUICK_ACTIONS = new Set(["start", "stop", "restart"]);
 
@@ -124,9 +124,78 @@ export function createBhOps(config) {
     return { ok: r.ok, code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
 
-  /** 长操作：build [svc] / update / up [--all] / deploy。返回 opId。 */
+  /**
+   * 链式长操作：build-restart <svc> —— 先 bh build <svc>，成功（exit 0）后自动
+   * bh restart <svc>，整个过程记入同一个 op（tail 连续追加）。
+   */
+  function startBuildRestart(service) {
+    const id = `op-${Date.now()}-${++seq}`;
+    const logPath = `/tmp/bh-${id}.log`;
+    let tail = "";
+    const append = (s) => {
+      tail = (tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
+    };
+    const entry = {
+      id,
+      action: "build-restart",
+      service: service ?? "",
+      startedAt: new Date().toISOString(),
+      running: true,
+      exitCode: null,
+      logPath,
+    };
+    ops.set(id, entry);
+
+    const run = (args, label) =>
+      new Promise((resolve) => {
+        append(`\n===== ${label}（bh ${args.join(" ")}）=====\n`);
+        const child = spawn(bhCommand, args, { stdio: ["ignore", "pipe", "pipe"] });
+        child.stdout.on("data", (d) => append(d.toString()));
+        child.stderr.on("data", (d) => append(d.toString()));
+        child.on("close", (code) => {
+          append(`\n[${label}] exit code: ${code}\n`);
+          resolve(code);
+        });
+        child.on("error", (err) => {
+          append(`\n[${label}] spawn error: ${err.message}\n`);
+          entry.error = err.message;
+          resolve(-1);
+        });
+      });
+
+    void (async () => {
+      const buildArgs = ["build"];
+      if (service) buildArgs.push(service);
+      const buildCode = await run(buildArgs, "编译");
+      if (buildCode !== 0) {
+        entry.running = false;
+        entry.exitCode = buildCode;
+        append(`\n[build-restart] 编译失败（exit ${buildCode}），已跳过重启。\n`);
+        return;
+      }
+      const restartArgs = ["restart", service];
+      const restartCode = await run(restartArgs, "滚动重启");
+      entry.running = false;
+      entry.exitCode = restartCode;
+      append(`\n[build-restart] ${restartCode === 0 ? "完成 ✅" : "重启失败（exit " + restartCode + "）"}。\n`);
+    })();
+
+    return entry;
+  }
+
+  /** 长操作：build [svc] / update / up [--all] / deploy / build-restart <svc>。返回 opId。 */
   function startLongAction(name, service) {
     if (!LONG_ACTIONS.has(name)) return { ok: false, error: `不支持的长操作: ${name}` };
+    if (name === "build-restart") {
+      if (!service) return { ok: false, error: "build-restart 需要指定服务（family/ai/vault/webui/openvino/postgres）" };
+      const op = startBuildRestart(service);
+      return { ok: true, opId: op.id, action: "build-restart", service };
+    }
     if (name === "up" && service === "--all") {
       const op = startLong("up", "--all");
       return { ok: true, opId: op.id, action: "up", service: "--all" };

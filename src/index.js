@@ -357,6 +357,21 @@ export function apply(ctx, config) {
     }
     ctx.tools.register(
       defineTool({
+        name: "bh_build_restart",
+        description:
+          "编译并重启百花某个服务（编译成功 exit 0 后自动滚动重启，一次操作完成）。参数 service 为 family/ai/vault/webui/openvino/postgres。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
+        parameters: { service: { type: "string", required: true, description: "要编译并重启的服务" } },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const r = bhOps.startLongAction("build-restart", String(args.service));
+          return r.ok
+            ? `已开始编译并重启 ${args.service}（opId=${r.opId}）。用 bh_op_status 查询进度。`
+            : `启动失败：${r.error}`;
+        },
+      }),
+    );
+    ctx.tools.register(
+      defineTool({
         name: "bh_build",
         description:
           "编译百花镜像（可指定服务 family/ai/vault/webui/openvino，省略则编译全部）。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
@@ -548,7 +563,7 @@ export function apply(ctx, config) {
           const r = bhOps.action(action, service);
           return sendJson(res, r.ok ? 200 : 400, r);
         }
-        if (["build", "update", "up", "deploy"].includes(action)) {
+        if (["build", "update", "up", "deploy", "build-restart"].includes(action)) {
           const r = bhOps.startLongAction(action, service);
           return sendJson(res, r.ok ? 200 : 400, r);
         }
