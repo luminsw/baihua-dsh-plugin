@@ -37,6 +37,13 @@
 仓库（`@modelcontextprotocol/sdk`，stdio），把上述**只读数据工具**按标准 MCP 暴露给任意
 MCP 客户端（DSH 经 `@deepseek-ai/dsh-mcp-client` 接入后工具名带 `mcp__baihua__` 前缀）。
 连接目标经 `BAIHUA_VAULT_URL` / `BAIHUA_FAMILY_URL` 环境变量配置（默认 127.0.0.1:8790/8788）。
+
+### DSH 设置页「百花服务状态」卡片（客户端插件）
+
+本包同时携带浏览器侧客户端模块（`client.js`，lazy-CJS factory 格式）：在 **DSH 设置 →
+插件**页注册一张「百花服务」卡片，只读展示百花各服务状态（就绪/副本/阶段/重启 + 运行中
+bh 操作），每 10s 自动刷新。数据来自 host 侧 `/dsh-bridge/bh/status-ui`（仅 127.0.0.1
+webServer、免鉴权、只读；局域网桥不暴露此路由）。
 详见百花仓库 `docs/DSH_INTEGRATION.md` 的 6.5 节。
 
 ### 事件流格式（每行一个 JSON）
