@@ -19,13 +19,17 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 
 export const name = "dsh-baihua-bridge";
 
-export const inject = ["agents", "sessions", "agentDefaultModel", "webServer"];
+export const inject = ["agents", "sessions", "webServer"];
 
 export const Config = z.object({
   /** history 响应体大小上限（字节）；超出部分截断并标记 truncated。 */
   maxBufferedText: z.number().default(1_000_000),
   /** 可选共享密钥：设置后，除 /status 外的所有接口要求 Bearer token（HTTP）或 ?token=（WS）。 */
   token: z.string(),
+  /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的 provider 路由。 */
+  fallbackProvider: z.string().default("deepseek-official"),
+  /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的模型。 */
+  fallbackModel: z.string().default("deepseek-v4-flash"),
 });
 
 /** 从第一条用户消息抽取会话标题候选。 */
@@ -148,7 +152,7 @@ function eventToJson(sessionId, event) {
 /**
  * Cordis 插件入口。复用 DSH 的 `ctx.webServer`（默认 127.0.0.1:3080）暴露桥接路由。
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ maxBufferedText: number, token?: string }} config
+ * @param {{ maxBufferedText: number, token?: string, fallbackProvider: string, fallbackModel: string }} config
  */
 export function apply(ctx, config) {
   /** 活跃 agent：sessionId -> { handle, sockets } */
@@ -220,7 +224,10 @@ export function apply(ctx, config) {
     }
     const defaultModel = ctx.get("agentDefaultModel");
     const selection =
-      defaultModel?.currentSelection?.() ?? { provider: "deepseek-official", model: "deepseek-v4-flash" };
+      defaultModel?.currentSelection?.() ?? {
+        provider: config.fallbackProvider,
+        model: config.fallbackModel,
+      };
     const workingDir = cwd ?? process.cwd();
 
     let handle;

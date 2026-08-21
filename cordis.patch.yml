@@ -1,0 +1,12 @@
+# baihua-dsh-plugin 组合包 patch：在 DSH webServer 上暴露 /dsh-bridge/* 桥接接口。
+#
+# 安装本包（dsh plugin --profile web add github:luminsw/baihua-dsh-plugin）后，
+# profile 组合（dsh.profile.bundles）会自动应用本层；如需鉴权，在 profile 自己的
+# cordis.patch.yml 里按 id 覆盖 config（后应用的层按行胜出）：
+#   - id: dsh-baihua-bridge
+#     config:
+#       token: '<共享密钥>'
+
+- insert:
+    - id: dsh-baihua-bridge
+      name: baihua-dsh-plugin

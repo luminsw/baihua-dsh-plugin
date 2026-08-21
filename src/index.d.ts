@@ -7,13 +7,17 @@ export interface BridgeConfig {
   maxBufferedText?: number;
   /** 可选共享密钥：设置后，除 /status 外的所有接口要求 Bearer token（HTTP）或 ?token=（WS）。 */
   token?: string;
+  /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的 provider 路由。 */
+  fallbackProvider?: string;
+  /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的模型。 */
+  fallbackModel?: string;
 }
 
 /** 插件名（Cordis 约定）。 */
 export declare const name = "dsh-baihua-bridge";
 
 /** 需要注入的 DSH 服务。 */
-export declare const inject: readonly ["agents", "sessions", "agentDefaultModel", "webServer"];
+export declare const inject: readonly ["agents", "sessions", "webServer"];
 
 /** 配置描述。 */
 export declare const Config: Model<BridgeConfig>;

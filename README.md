@@ -50,11 +50,12 @@
 
 ## 安装与加载
 
-本插件是一个 Cordis 插件包，DSH 会把它装进 web profile 的依赖树。推荐从
+本插件是一个标准的 DSH **组合包（bundle）**：`package.json` 声明了 `dsh.bundle`，
+安装后由 profile 组合自动应用其 `cordis.patch.yml` 层，无需手动改补丁。推荐从
 GitHub 仓库安装：
 
 ```bash
-# 1) 进入 web profile 目录，用 DSH 的 plugin 命令安装本包
+# 1) 进入 web profile 目录，用 DSH 的 plugin 命令安装本包（自动激活组合层）
 cd "$HOME\.dsh\profiles\web"
 dsh plugin --profile web add github:luminsw/baihua-dsh-plugin
 ```
@@ -62,14 +63,17 @@ dsh plugin --profile web add github:luminsw/baihua-dsh-plugin
 > 也可从本地路径安装：`dsh plugin --profile web add link:C:\Users\lumin\source\repos\baihua-dsh-plugin`
 > 或用 pnpm 直接：`pnpm add file:C:\Users\lumin\source\repos\baihua-dsh-plugin`。
 
-2) 在用户级补丁 `~/.dsh/cordis.patch.yml` 的 `insert` 列表末尾追加插件
-（如需鉴权，在 `config` 中设置 `token`）：
+> ⚠️ 从 git 安装会拉取源码并运行包的 `prepare` 脚本；pnpm ≥ 10 首次需要显式授权
+> （`dsh plugin` 会提示把包键加入该 profile 的 `pnpm-workspace.yaml` 的
+> `allowBuilds`，然后重新执行 `add`）。
+
+2) 如需鉴权，在用户级补丁 `~/.dsh/cordis.patch.yml` 的 `insert` 列表按 id 覆盖
+   该行配置（后应用的层按行胜出）：
 
 ```yaml
 - insert:
     # …… 已有的 MCP / 其他插件条目保持不变 ……
-    - id: baihua-dsh-plugin
-      name: 'baihua-dsh-plugin'
+    - id: dsh-baihua-bridge
       config:
         token: 'your-shared-secret'   # 可选；不设置则保持开放（仅限回环）
 ```
@@ -80,6 +84,9 @@ dsh plugin --profile web add github:luminsw/baihua-dsh-plugin
 ```bash
 curl http://127.0.0.1:3080/dsh-bridge/status
 ```
+
+> 旧方式（手动复制到 `profiles/node_modules` 再手改 `cordis.patch.yml`）仍然可用，
+> 但不享受 `dsh plugin` 的层管理；推荐统一走上面的 bundle 安装。
 
 ## 百花侧对接
 
