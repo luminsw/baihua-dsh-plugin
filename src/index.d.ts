@@ -15,6 +15,14 @@ export interface BridgeConfig {
   lanListen?: string;
   /** 百花服务运维（bh CLI）入口；留空禁用运维端点与工具。 */
   bhCommand?: string;
+  /** 百花 Vault 服务地址（知识库检索/笔记）。 */
+  vaultUrl?: string;
+  /** 百花 Family 服务地址（家庭数据）。 */
+  familyUrl?: string;
+  /** ComfyUI 服务地址（出图工具）。 */
+  comfyUrl?: string;
+  /** ComfyUI 默认 checkpoint。 */
+  comfyCheckpoint?: string;
 }
 
 /** 插件名（Cordis 约定）。 */
