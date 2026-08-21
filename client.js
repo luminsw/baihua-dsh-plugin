@@ -9,7 +9,7 @@
  * 数据源：host 侧 /dsh-bridge/bh/status-ui（仅 127.0.0.1 webServer、免鉴权、只读）。
  */
 window.__ModuleLoader__.load({
-  id: "baihua-dsh-plugin/client",
+  id: "baihua-dsh-plugin",
   factory(require) {
     const React = require("react");
     const { useState, useEffect } = React;
