@@ -21,11 +21,15 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
+import { settingsNamespace, installSettingsSection } from "@deepseek-ai/dsh-settings";
 import { createBhOps } from "./ops.js";
 import { createBaihuaApi } from "./baihua.js";
 import { createComfyClient } from "./comfy.js";
 
 export const name = "dsh-baihua-bridge";
+
+/** DSH 设置页插件卡片命名空间（客户端卡片以同名 key 注册）。 */
+const SETTINGS_NS = settingsNamespace("baihua");
 
 export const inject = ["agents", "sessions", "webServer", "tools"];
 
@@ -325,6 +329,14 @@ export function apply(ctx, config) {
 
   // ---------- 百花服务运维（bh CLI）----------
   const bhOps = config.bhCommand ? createBhOps(config) : null;
+
+  // ---------- DSH 设置页命名空间（让「百花服务状态」卡片在 DSH UI 设置页渲染）----------
+  // 仅注册命名空间供客户端卡片配对；卡片本体只读展示，不在此编辑配置。
+  installSettingsSection(ctx, SETTINGS_NS, Config, config, {
+    setSource: () => {},
+    onChange: () => {},
+  });
+
   const registerBhTools = () => {
     if (!bhOps) return;
     const j = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
@@ -521,6 +533,31 @@ export function apply(ctx, config) {
   function sendJson(res, code, obj) {
     res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(obj));
+  }
+
+  /**
+   * 只读状态端点（供 DSH Web UI 的客户端卡片同源拉取）：
+   * 仅注册在 127.0.0.1 的 webServer 上、不鉴权；LAN 监听器不暴露此路由，
+   * /dsh-bridge/bh/* 在局域网仍全部要求 token。
+   */
+  function handleStatusUi(req, res) {
+    if (!bhOps) return sendJson(res, 503, { ok: false, error: "bh 运维未启用" });
+    void bhOps.status().then((r) => {
+      if (!r.ok) return sendJson(res, 502, { ok: false, error: r.error });
+      sendJson(res, 200, {
+        ok: true,
+        updatedAt: r.status.updatedAt,
+        summary: r.status.summary,
+        services: (r.status.services ?? []).map((s) => ({
+          name: s.name,
+          ready: s.ready,
+          replicas: s.replicas,
+          phase: s.phase,
+          restarts: s.restarts,
+        })),
+        runningOps: r.runningOps ?? [],
+      });
+    });
   }
 
   function handleBh(req, res) {
@@ -777,6 +814,11 @@ export function apply(ctx, config) {
     if (disposeHistory) disposers.push(disposeHistory);
     const disposeBh = bhOps ? webServer?.register({ kind: "prefix", path: "/dsh-bridge/bh", handler: handleBh }) : null;
     if (disposeBh) disposers.push(disposeBh);
+    // 只读状态（不鉴权）：仅本机 webServer，供 DSH UI 客户端卡片拉取；LAN 不暴露
+    const disposeStatusUi = bhOps
+      ? webServer?.register({ kind: "exact", path: "/dsh-bridge/bh/status-ui", handler: handleStatusUi })
+      : null;
+    if (disposeStatusUi) disposers.push(disposeStatusUi);
     const disposeUpgrade = webServer?.registerUpgrade({ path: "/dsh-bridge/stream", handler: handleWsUpgrade });
     if (disposeUpgrade) disposers.push(disposeUpgrade);
 
