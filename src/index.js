@@ -3,12 +3,14 @@
  * 让百花（Baihua.Web，Blazor）作为客户端驱动 DSH 的 agent 会话，
  * 并把 `session/event` 事件流实时推回给百花渲染（流式 token / 工具调用时间线）。
  *
- * 依赖 DSH 核心服务：agents / sessions / agentDefaultModel / webServer。
+ * 依赖 DSH 核心服务：agents / sessions / agentDefaultModel / webServer / sessionPersistence。
  * 安装到 DSH web profile 并挂到 `~/.dsh/cordis.patch.yml` 的 insert 列表即可加载。
+ *
+ * 安全：默认仅信任回环访问。请保持 webServer 绑定 127.0.0.1，并建议通过 `token`
+ * 配置为除 /status 外的所有接口开启 Bearer 鉴权（HTTP `Authorization: Bearer <token>`
+ * 或查询参数 `?token=`；WebSocket 使用 `?token=`）。
  */
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import z from "@deepseek-ai/schemastery";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
@@ -17,24 +19,16 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 
 export const name = "dsh-baihua-bridge";
 
-const inject = ["agents", "sessions", "agentDefaultModel", "webServer"];
+export const inject = ["agents", "sessions", "agentDefaultModel", "webServer"];
 
 export const Config = z.object({
+  /** history 响应体大小上限（字节）；超出部分截断并标记 truncated。 */
   maxBufferedText: z.number().default(1_000_000),
+  /** 可选共享密钥：设置后，除 /status 外的所有接口要求 Bearer token（HTTP）或 ?token=（WS）。 */
+  token: z.string(),
 });
 
-/** 会话文件根目录（持久化 JSONL 所在）。 */
-function sessionRoot() {
-  return join(process.env.DSH_HOME ?? process.env.USERPROFILE ?? ".", ".dsh", "sessions");
-}
-
 /** 从第一条用户消息抽取会话标题候选。 */
-function titleFromPrompt(prompt) {
-  const t = prompt.trim().replace(/\s+/g, " ").slice(0, 60);
-  return t || "(空任务)";
-}
-
-/** 从会话事件序列推断标题：第一条 user 消息文本。 */
 function titleForEvents(events) {
   for (const e of events) {
     if (e.type === "user/message") {
@@ -154,13 +148,28 @@ function eventToJson(sessionId, event) {
 /**
  * Cordis 插件入口。复用 DSH 的 `ctx.webServer`（默认 127.0.0.1:3080）暴露桥接路由。
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ maxBufferedText: number }} config
+ * @param {{ maxBufferedText: number, token?: string }} config
  */
 export function apply(ctx, config) {
   /** 活跃 agent：sessionId -> { handle, sockets } */
   const active = new Map();
   /** 会话元数据清单（内存，供列表展示）。 */
   const metas = [];
+  const maxBufferedText = config.maxBufferedText;
+
+  // ---------- 可选鉴权 ----------
+  const bridgeToken = config.token;
+  function authorized(req) {
+    if (!bridgeToken) return true;
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.searchParams.get("token") === bridgeToken) return true;
+    const header = req.headers?.authorization;
+    return typeof header === "string" && header === `Bearer ${bridgeToken}`;
+  }
+  function unauthorized(res) {
+    res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+  }
 
   function upsertMeta(m) {
     const i = metas.findIndex((x) => x.id === m.id);
@@ -191,11 +200,6 @@ export function apply(ctx, config) {
       }
     }
   }
-
-  /** 在全局 session/event 火焰线上，仅转发我们管理的 session。 */
-  ctx.on("session/event", (session, event) => {
-    if (active.has(session.id)) broadcast(session, event);
-  });
 
   async function refreshMetaFromAgent(handle, title) {
     const events = handle.agent.session.events;
@@ -231,6 +235,20 @@ export function apply(ctx, config) {
         agentOptions: { provider: selection.provider, model: selection.model },
         setup: (agentCtx) => {
           installModelSelection(agentCtx, { current: selection, assembled: undefined });
+          // 会话销毁时清理桥接侧状态，避免 active 表悬挂
+          agentCtx.on("agent/disposed", () => {
+            const entry = active.get(agentCtx.agent.id);
+            if (entry) {
+              for (const ws of entry.sockets) {
+                try {
+                  ws.close(1001, "disposed");
+                } catch {
+                  /* noop */
+                }
+              }
+              active.delete(agentCtx.agent.id);
+            }
+          });
         },
       });
     }
@@ -246,188 +264,258 @@ export function apply(ctx, config) {
   }
 
   const webServer = ctx.get("webServer");
+  const wss = new WebSocketServer({ noServer: true });
 
-  // ---------- GET /dsh-bridge/status ----------
-  webServer?.register({
-    kind: "exact",
-    path: "/dsh-bridge/status",
-    handler: (_req, res) => {
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(
-        JSON.stringify({
-          service: "dsh-baihua-bridge",
-          ok: true,
-          activeSessions: active.size,
-          loadedSessions: metas.length,
-          pid: process.pid,
-        }),
-      );
-    },
-  });
+  // 所有 HTTP 路由 + WS upgrade 注册都包在 effect 里，插件卸载/更新时自动释放。
+  ctx.effect(() => {
+    const disposers = [];
 
-  // ---------- GET /dsh-bridge/sessions (精确) ----------
-  webServer?.register({
-    kind: "exact",
-    path: "/dsh-bridge/sessions",
-    handler: (_req, res) => {
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ sessions: metas }));
-    },
-  });
+    // ---------- GET /dsh-bridge/status（健康检查，不鉴权） ----------
+    {
+      const dispose = webServer?.register({
+        kind: "exact",
+        path: "/dsh-bridge/status",
+        handler: (_req, res) => {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(
+            JSON.stringify({
+              service: "dsh-baihua-bridge",
+              ok: true,
+              activeSessions: active.size,
+              loadedSessions: metas.length,
+              pid: process.pid,
+            }),
+          );
+        },
+      });
+      if (dispose) disposers.push(dispose);
+    }
 
-  // ---------- POST /dsh-bridge/chat ----------
-  webServer?.register({
-    kind: "exact",
-    path: "/dsh-bridge/chat",
-    handler: async (req, res) => {
-      try {
-        const body = await readBody(req);
-        const input = readJson(body);
-        if (!input || !input.message || !input.message.trim()) {
-          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ ok: false, error: "message is required" }));
+    // ---------- GET /dsh-bridge/sessions (精确) ----------
+    {
+      const dispose = webServer?.register({
+        kind: "exact",
+        path: "/dsh-bridge/sessions",
+        handler: (req, res) => {
+          if (!authorized(req)) return unauthorized(res);
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ sessions: metas }));
+        },
+      });
+      if (dispose) disposers.push(dispose);
+    }
+
+    // ---------- POST /dsh-bridge/chat ----------
+    {
+      const dispose = webServer?.register({
+      kind: "exact",
+      path: "/dsh-bridge/chat",
+      handler: async (req, res) => {
+        if (!authorized(req)) return unauthorized(res);
+        try {
+          const body = await readBody(req);
+          const input = readJson(body);
+          if (!input || !input.message || !input.message.trim()) {
+            res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: false, error: "message is required" }));
+            return;
+          }
+          const { agent, id } = await ensureAgent(input.cwd, input.sessionId);
+          // 不 await 本轮结束：agent 在后台异步执行，执行过程通过 WS 事件流推送。
+          // 这样客户端可以先拿到 sessionId 并打开 WS 订阅，再实时接收 assistant/chunk。
+          agent.followup(
+            createUserMessage({
+              content: [{ type: "text", text: input.message }],
+              source: { kind: "user" },
+            }),
+          );
+          // 后台等待停稳，更新元数据
+          void (async () => {
+            try {
+              await runUpdate(active.get(id).handle);
+            } catch (e) {
+              console.error(`[dsh-baihua-bridge] chat run error: ${e instanceof Error ? e.message : e}`);
+            }
+          })();
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              sessionId: id,
+              messageCount: countUserMessages(agent.session.events),
+            }),
+          );
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+        }
+      },
+      });
+      if (dispose) disposers.push(dispose);
+    }
+
+    // ---------- GET /dsh-bridge/sessions/{id}/history (前缀) ----------
+    {
+      const dispose = webServer?.register({
+      kind: "prefix",
+      path: "/dsh-bridge/sessions",
+      handler: async (req, res) => {
+        const m = /^\/dsh-bridge\/sessions\/([^/]+)\/history$/.exec(req.url ?? "/");
+        if (!m) {
+          res.writeHead(404);
+          res.end();
           return;
         }
-        const { agent, id } = await ensureAgent(input.cwd, input.sessionId);
-        // 不 await 本轮结束：agent 在后台异步执行，执行过程通过 WS 事件流推送。
-        // 这样客户端可以先拿到 sessionId 并打开 WS 订阅，再实时接收 assistant/chunk。
-        agent.followup(
-          createUserMessage({
-            content: [{ type: "text", text: input.message }],
-            source: { kind: "user" },
-          }),
-        );
-        // 后台等待停稳，更新元数据
-        void (async () => {
-          try {
-            await runUpdate(active.get(id).handle);
-          } catch (e) {
-            console.error(`[dsh-baihua-bridge] chat run error: ${e instanceof Error ? e.message : e}`);
+        if (!authorized(req)) return unauthorized(res);
+        const id = decodeURIComponent(m[1]);
+        try {
+          const live = active.get(id)?.handle.agent;
+          let events;
+          if (live) {
+            events = live.session.events;
+          } else {
+            // 非活跃会话：走 DSH 官方持久化服务读取（JSONL 后端支持原始 artifact 读取，
+            // 自动处理项目目录分组与 zstd 解压），不再自行猜测磁盘布局。
+            const persistence = ctx.get("sessionPersistence");
+            const raw =
+              persistence && persistence.supportsRawArtifacts
+                ? await persistence.readRaw(SessionId(id))
+                : undefined;
+            if (!raw) {
+              res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+              res.end(
+                JSON.stringify({
+                  ok: false,
+                  error: `session ${id} is not live and has no persisted log`,
+                }),
+              );
+              return;
+            }
+            events = raw.content
+              .split(/\r?\n/)
+              .map(readJson)
+              .filter(Boolean);
           }
-        })();
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            sessionId: id,
-            messageCount: countUserMessages(agent.session.events),
-          }),
-        );
-      } catch (e) {
-        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-      }
-    },
-  });
-
-  // ---------- GET /dsh-bridge/sessions/{id}/history (前缀) ----------
-  webServer?.register({
-    kind: "prefix",
-    path: "/dsh-bridge/sessions",
-    handler: async (req, res) => {
-      const m = /^\/dsh-bridge\/sessions\/([^/]+)\/history$/.exec(req.url ?? "/");
-      if (!m) {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
-      const id = decodeURIComponent(m[1]);
-      try {
-        const live = active.get(id)?.handle.agent;
-        let events;
-        if (live) {
-          events = live.session.events;
-        } else {
-          const file = join(sessionRoot(), `${id}.jsonl`);
-          const raw = await readFile(file, "utf8");
-          events = raw
-            .split(/\r?\n/)
-            .map(readJson)
-            .filter(Boolean);
-        }
-        const existing = metas.find((x) => x.id === id);
-        upsertMeta({
-          id,
-          title: titleForEvents(events),
-          cwd: live?.session.header.cwd ?? existing?.cwd,
-          createdAt: live?.session.header.createdAt ?? existing?.createdAt ?? Date.now(),
-          updatedAt: Date.now(),
-          messageCount: countUserMessages(events),
-        });
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(
-          JSON.stringify({
-            sessionId: id,
+          const existing = metas.find((x) => x.id === id);
+          upsertMeta({
+            id,
             title: titleForEvents(events),
-            events: events.map((e) => eventToJson(id, e)),
-          }),
-        );
-      } catch (e) {
-        res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-      }
-    },
-  });
+            cwd: live?.session.header.cwd ?? existing?.cwd,
+            createdAt: live?.session.header.createdAt ?? existing?.createdAt ?? Date.now(),
+            updatedAt: Date.now(),
+            messageCount: countUserMessages(events),
+          });
+          // 按 maxBufferedText 截断序列化体积，避免单次响应过大
+          const parts = [];
+          let total = 0;
+          let truncated = false;
+          for (const e of events) {
+            const s = JSON.stringify(eventToJson(id, e));
+            if (maxBufferedText > 0 && total + s.length > maxBufferedText) {
+              truncated = true;
+              break;
+            }
+            total += s.length;
+            parts.push(s);
+          }
+          const title = titleForEvents(events);
+          const body =
+            `{"sessionId":${JSON.stringify(id)},"title":${JSON.stringify(title)},` +
+            `"events":[${parts.join(",")}]${truncated ? `,"truncated":true` : ""}}`;
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(body);
+        } catch (e) {
+          res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+        }
+      },
+      });
+      if (dispose) disposers.push(dispose);
+    }
 
-  // ---------- WS upgrade: /dsh-bridge/stream?sessionId=xxx ----------
-  const wss = new WebSocketServer({ noServer: true });
-  ctx.effect(() => {
-    const cleanup = () => {
-      for (const ws of wss.clients) ws.close(1001, "shutdown");
-    };
-    (globalThis).__dshBridgeCleanup = cleanup;
+    // ---------- WS upgrade: /dsh-bridge/stream?sessionId=xxx&token= ----------
+    {
+      const dispose = webServer?.registerUpgrade({
+      path: "/dsh-bridge/stream",
+      handler: (req, socket, head) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        if (bridgeToken && url.searchParams.get("token") !== bridgeToken) {
+          socket.write(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n" +
+              JSON.stringify({ ok: false, error: "unauthorized" }),
+          );
+          socket.destroy();
+          return;
+        }
+        const sessionId = url.searchParams.get("sessionId") ?? "";
+        const cwd = url.searchParams.get("cwd") ?? undefined;
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          const send = (obj) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+          };
+          const subscribe = (sid) => {
+            if (!active.has(sid)) {
+              send({ kind: "error", message: `session ${sid} not active` });
+              ws.close();
+              return;
+            }
+            subscribeSocket(sid, ws);
+            send({ kind: "connected", sessionId: sid });
+          };
+          if (sessionId) {
+            // 续聊已存在的会话
+            subscribe(sessionId);
+            return;
+          }
+          // 未指定 sessionId：新建一个 agent 会话，先回客户端 sessionId 供 POST /chat 使用
+          ensureAgent(cwd, undefined)
+            .then(({ id }) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                send({ kind: "session", sessionId: id });
+              }
+              subscribe(id);
+            })
+            .catch((e) => {
+              send({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+              try {
+                ws.close();
+              } catch {
+                /* noop */
+              }
+            });
+        });
+      },
+      });
+      if (dispose) disposers.push(dispose);
+    }
+
+    // 事件转发监听（Cordis 会在 fiber 卸载时自动移除 ctx.on 监听器）
+    ctx.on("session/event", (session, event) => {
+      if (active.has(session.id)) broadcast(session, event);
+    });
+
     return () => {
+      for (const ws of wss.clients) {
+        try {
+          ws.close(1001, "shutdown");
+        } catch {
+          /* noop */
+        }
+      }
       try {
         wss.close();
       } catch {
         /* noop */
       }
+      for (const dispose of disposers) {
+        try {
+          dispose();
+        } catch {
+          /* noop */
+        }
+      }
     };
   });
 
-  webServer?.registerUpgrade({
-    path: "/dsh-bridge/stream",
-    handler: (req, socket, head) => {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      const sessionId = url.searchParams.get("sessionId") ?? "";
-      const cwd = url.searchParams.get("cwd") ?? undefined;
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        const send = (obj) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-        };
-        const subscribe = (sid) => {
-          if (!active.has(sid)) {
-            send({ kind: "error", message: `session ${sid} not active` });
-            ws.close();
-            return;
-          }
-          subscribeSocket(sid, ws);
-          send({ kind: "connected", sessionId: sid });
-        };
-        if (sessionId) {
-          // 续聊已存在的会话
-          subscribe(sessionId);
-          return;
-        }
-        // 未指定 sessionId：新建一个 agent 会话，先回客户端 sessionId 供 POST /chat 使用
-        ensureAgent(cwd, undefined)
-          .then(({ id }) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              send({ kind: "session", sessionId: id });
-            }
-            subscribe(id);
-          })
-          .catch((e) => {
-            send({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-            try {
-              ws.close();
-            } catch {
-              /* noop */
-            }
-          });
-      });
-    },
-  });
-
-  console.log(`[dsh-baihua-bridge] loaded.`);
+  console.log(`[dsh-baihua-bridge] loaded${bridgeToken ? " (token auth enabled)" : " (open, loopback only)"}.`);
 }

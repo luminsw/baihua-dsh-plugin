@@ -3,8 +3,10 @@ import type { Model } from "@deepseek-ai/schemastery";
 
 /** 插件配置。 */
 export interface BridgeConfig {
-  /** WebSocket 单连接缓冲上限（字节）。 */
+  /** history 响应体大小上限（字节）；超出部分截断并标记 truncated。 */
   maxBufferedText?: number;
+  /** 可选共享密钥：设置后，除 /status 外的所有接口要求 Bearer token（HTTP）或 ?token=（WS）。 */
+  token?: string;
 }
 
 /** 插件名（Cordis 约定）。 */
