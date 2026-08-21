@@ -22,6 +22,7 @@ import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { createBhOps } from "./ops.js";
+import { createBaihuaApi } from "./baihua.js";
 
 export const name = "dsh-baihua-bridge";
 
@@ -49,6 +50,10 @@ export const Config = z.object({
    * 以宿主机用户权限执行启停/编译/更新，必须配合 token 鉴权。
    */
   bhCommand: z.string().default("bh"),
+  /** 百花 Vault 服务地址（知识库检索/笔记；默认本机回环，k8s 部署填 ClusterIP）。 */
+  vaultUrl: z.string().default("http://127.0.0.1:8790"),
+  /** 百花 Family 服务地址（家庭数据；默认本机回环，k8s 部署填 ClusterIP）。 */
+  familyUrl: z.string().default("http://127.0.0.1:8788"),
 });
 
 /** 从第一条用户消息抽取会话标题候选。 */
@@ -402,6 +407,63 @@ export function apply(ctx, config) {
     );
   };
   registerBhTools();
+
+  // ---------- 百花数据只读工具（知识库/笔记/家庭）----------
+  const baihuaApi = createBaihuaApi(config);
+  const registerBaihuaTools = () => {
+    const j = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
+    const textTool = (name, description, parameters, run) =>
+      ctx.tools.register(
+        defineTool({
+          name,
+          description,
+          parameters,
+          output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+          async execute(args) {
+            try {
+              const r = await run(args);
+              return r.ok ? j(r.data) : "调用失败（百花服务不可达或返回错误）。";
+            } catch (e) {
+              return `调用失败：${e instanceof Error ? e.message : String(e)}`;
+            }
+          },
+        }),
+      );
+    textTool(
+      "baihua_vault_search",
+      "搜索百花知识库（全文/语义），返回命中的笔记片段。参数 query 为关键词，vaultId 可选（留空搜全部）。",
+      { query: { type: "string", required: true, description: "搜索关键词" }, vaultId: { type: "string", description: "知识库 id（可选）" } },
+      (a) => baihuaApi.searchVault(String(a.query), String(a.vaultId ?? "")),
+    );
+    textTool(
+      "baihua_vault_list",
+      "列出百花全部知识库（名称/路径/来源）。",
+      {},
+      () => baihuaApi.listVaults(),
+    );
+    textTool(
+      "baihua_vault_read_note",
+      "读取百花知识库中的一条笔记（markdown 全文）。参数 path 为笔记相对路径（如 基础认识/笔记.md），vaultId 为知识库 id。",
+      {
+        path: { type: "string", required: true, description: "笔记相对路径，如 基础认识/笔记.md" },
+        vaultId: { type: "string", required: true, description: "知识库 id" },
+      },
+      (a) => baihuaApi.readNote(String(a.path), String(a.vaultId)),
+    );
+    textTool(
+      "baihua_budget_summary",
+      "查看百花家庭记账汇总（本月收入/支出/结余/分类）。",
+      {},
+      () => baihuaApi.budgetSummary(),
+    );
+    textTool(
+      "baihua_tasks_list",
+      "查看百花家庭任务/待办列表（标题/状态/时间）。",
+      {},
+      () => baihuaApi.listTasks(),
+    );
+  };
+  registerBaihuaTools();
 
   // ---------- 百花服务运维 HTTP 端点（/dsh-bridge/bh/*，全部 token 鉴权） ----------
   function sendJson(res, code, obj) {
