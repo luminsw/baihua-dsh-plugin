@@ -9,8 +9,12 @@
  * 安全：默认仅信任回环访问。请保持 webServer 绑定 127.0.0.1，并建议通过 `token`
  * 配置为除 /status 外的所有接口开启 Bearer 鉴权（HTTP `Authorization: Bearer <token>`
  * 或查询参数 `?token=`；WebSocket 使用 `?token=`）。
+ * 若需要让局域网内的百花（如 k8s 容器里的百花 Web）访问桥接接口，配置 `lanListen`
+ * （如 "0.0.0.0:3081"）：插件会起一个只暴露 /dsh-bridge/* 的小服务（同样带 token 鉴权），
+ * DSH 核心 webServer 仍只监听 127.0.0.1，不会把 DSH 的远程执行界面暴露到网络。
  */
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import z from "@deepseek-ai/schemastery";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
@@ -30,6 +34,12 @@ export const Config = z.object({
   fallbackProvider: z.string().default("deepseek-official"),
   /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的模型。 */
   fallbackModel: z.string().default("deepseek-v4-flash"),
+  /**
+   * 可选：把桥接接口（/dsh-bridge/*）额外暴露到指定地址，如 "0.0.0.0:3081"。
+   * 仅暴露桥接路由（带 token 鉴权），DSH 核心 webServer 仍只监听 127.0.0.1，
+   * 不会把 DSH 的远程执行界面暴露到网络。设置非回环地址时必须同时配置 token。
+   */
+  lanListen: z.string().default(""),
 });
 
 /** 从第一条用户消息抽取会话标题候选。 */
@@ -150,9 +160,10 @@ function eventToJson(sessionId, event) {
 }
 
 /**
- * Cordis 插件入口。复用 DSH 的 `ctx.webServer`（默认 127.0.0.1:3080）暴露桥接路由。
+ * Cordis 插件入口。复用 DSH 的 `ctx.webServer`（默认 127.0.0.1:3080）暴露桥接路由；
+ * 配置 `lanListen` 时额外在指定地址起一个只暴露 /dsh-bridge/* 的局域网小服务。
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ maxBufferedText: number, token?: string, fallbackProvider: string, fallbackModel: string }} config
+ * @param {{ maxBufferedText: number, token?: string, fallbackProvider: string, fallbackModel: string, lanListen?: string }} config
  */
 export function apply(ctx, config) {
   /** 活跃 agent：sessionId -> { handle, sockets } */
@@ -173,6 +184,26 @@ export function apply(ctx, config) {
   function unauthorized(res) {
     res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+  }
+
+  // ---------- 可选：桥接接口局域网监听（仅 /dsh-bridge/*，DSH 核心保持 127.0.0.1） ----------
+  const lanListen = config.lanListen;
+  let lanHost = null;
+  let lanPort = 0;
+  if (lanListen) {
+    const idx = lanListen.lastIndexOf(":");
+    if (idx <= 0) {
+      throw new Error(`[dsh-baihua-bridge] lanListen 格式应为 host:port，收到 "${lanListen}"`);
+    }
+    lanHost = lanListen.slice(0, idx);
+    lanPort = Number(lanListen.slice(idx + 1));
+    if (!Number.isInteger(lanPort) || lanPort <= 0 || lanPort > 65535) {
+      throw new Error(`[dsh-baihua-bridge] lanListen 端口无效: "${lanListen}"`);
+    }
+    const loopback = lanHost === "127.0.0.1" || lanHost === "localhost" || lanHost === "::1";
+    if (!loopback && !bridgeToken) {
+      throw new Error("[dsh-baihua-bridge] lanListen 对外暴露（非回环地址）必须同时配置 token");
+    }
   }
 
   function upsertMeta(m) {
@@ -273,227 +304,237 @@ export function apply(ctx, config) {
   const webServer = ctx.get("webServer");
   const wss = new WebSocketServer({ noServer: true });
 
-  // 所有 HTTP 路由 + WS upgrade 注册都包在 effect 里，插件卸载/更新时自动释放。
+  // ==================== 桥接路由处理器（webServer 与局域网监听共用） ====================
+
+  // GET /dsh-bridge/status（健康检查，不鉴权）
+  function handleStatus(_req, res) {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(
+      JSON.stringify({
+        service: "dsh-baihua-bridge",
+        ok: true,
+        activeSessions: active.size,
+        loadedSessions: metas.length,
+        pid: process.pid,
+      }),
+    );
+  }
+
+  // GET /dsh-bridge/sessions（精确）
+  function handleSessions(req, res) {
+    if (!authorized(req)) return unauthorized(res);
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ sessions: metas }));
+  }
+
+  // POST /dsh-bridge/chat
+  async function handleChat(req, res) {
+    if (!authorized(req)) return unauthorized(res);
+    try {
+      const body = await readBody(req);
+      const input = readJson(body);
+      if (!input || !input.message || !input.message.trim()) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: "message is required" }));
+        return;
+      }
+      const { agent, id } = await ensureAgent(input.cwd, input.sessionId);
+      // 不 await 本轮结束：agent 在后台异步执行，执行过程通过 WS 事件流推送。
+      // 这样客户端可以先拿到 sessionId 并打开 WS 订阅，再实时接收 assistant/chunk。
+      agent.followup(
+        createUserMessage({
+          content: [{ type: "text", text: input.message }],
+          source: { kind: "user" },
+        }),
+      );
+      // 后台等待停稳，更新元数据
+      void (async () => {
+        try {
+          await runUpdate(active.get(id).handle);
+        } catch (e) {
+          console.error(`[dsh-baihua-bridge] chat run error: ${e instanceof Error ? e.message : e}`);
+        }
+      })();
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          sessionId: id,
+          messageCount: countUserMessages(agent.session.events),
+        }),
+      );
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+
+  // GET /dsh-bridge/sessions/{id}/history（前缀）
+  async function handleHistory(req, res) {
+    const m = /^\/dsh-bridge\/sessions\/([^/]+)\/history$/.exec(req.url ?? "/");
+    if (!m) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    if (!authorized(req)) return unauthorized(res);
+    const id = decodeURIComponent(m[1]);
+    try {
+      const live = active.get(id)?.handle.agent;
+      let events;
+      if (live) {
+        events = live.session.events;
+      } else {
+        // 非活跃会话：走 DSH 官方持久化服务读取（JSONL 后端支持原始 artifact 读取，
+        // 自动处理项目目录分组与 zstd 解压），不再自行猜测磁盘布局。
+        const persistence = ctx.get("sessionPersistence");
+        const raw =
+          persistence && persistence.supportsRawArtifacts
+            ? await persistence.readRaw(SessionId(id))
+            : undefined;
+        if (!raw) {
+          res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: `session ${id} is not live and has no persisted log`,
+            }),
+          );
+          return;
+        }
+        events = raw.content
+          .split(/\r?\n/)
+          .map(readJson)
+          .filter(Boolean);
+      }
+      const existing = metas.find((x) => x.id === id);
+      upsertMeta({
+        id,
+        title: titleForEvents(events),
+        cwd: live?.session.header.cwd ?? existing?.cwd,
+        createdAt: live?.session.header.createdAt ?? existing?.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+        messageCount: countUserMessages(events),
+      });
+      // 按 maxBufferedText 截断序列化体积，避免单次响应过大
+      const parts = [];
+      let total = 0;
+      let truncated = false;
+      for (const e of events) {
+        const s = JSON.stringify(eventToJson(id, e));
+        if (maxBufferedText > 0 && total + s.length > maxBufferedText) {
+          truncated = true;
+          break;
+        }
+        total += s.length;
+        parts.push(s);
+      }
+      const title = titleForEvents(events);
+      const body =
+        `{"sessionId":${JSON.stringify(id)},"title":${JSON.stringify(title)},` +
+        `"events":[${parts.join(",")}]${truncated ? `,"truncated":true` : ""}}`;
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(body);
+    } catch (e) {
+      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+
+  // WS upgrade: /dsh-bridge/stream?sessionId=xxx&token=
+  function handleWsUpgrade(req, socket, head) {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (bridgeToken && url.searchParams.get("token") !== bridgeToken) {
+      socket.write(
+        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n" +
+          JSON.stringify({ ok: false, error: "unauthorized" }),
+      );
+      socket.destroy();
+      return;
+    }
+    const sessionId = url.searchParams.get("sessionId") ?? "";
+    const cwd = url.searchParams.get("cwd") ?? undefined;
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      const send = (obj) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+      };
+      const subscribe = (sid) => {
+        if (!active.has(sid)) {
+          send({ kind: "error", message: `session ${sid} not active` });
+          ws.close();
+          return;
+        }
+        subscribeSocket(sid, ws);
+        send({ kind: "connected", sessionId: sid });
+      };
+      if (sessionId) {
+        // 续聊已存在的会话
+        subscribe(sessionId);
+        return;
+      }
+      // 未指定 sessionId：新建一个 agent 会话，先回客户端 sessionId 供 POST /chat 使用
+      ensureAgent(cwd, undefined)
+        .then(({ id }) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            send({ kind: "session", sessionId: id });
+          }
+          subscribe(id);
+        })
+        .catch((e) => {
+          send({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+          try {
+            ws.close();
+          } catch {
+            /* noop */
+          }
+        });
+    });
+  }
+
+  // ---------- 注册（DSH webServer + 可选局域网监听），全部包在 effect 里随卸载自动释放 ----------
   ctx.effect(() => {
     const disposers = [];
 
-    // ---------- GET /dsh-bridge/status（健康检查，不鉴权） ----------
-    {
-      const dispose = webServer?.register({
-        kind: "exact",
-        path: "/dsh-bridge/status",
-        handler: (_req, res) => {
-          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(
-            JSON.stringify({
-              service: "dsh-baihua-bridge",
-              ok: true,
-              activeSessions: active.size,
-              loadedSessions: metas.length,
-              pid: process.pid,
-            }),
-          );
-        },
-      });
-      if (dispose) disposers.push(dispose);
-    }
+    // DSH webServer（127.0.0.1:3080）
+    const disposeStatus = webServer?.register({ kind: "exact", path: "/dsh-bridge/status", handler: handleStatus });
+    if (disposeStatus) disposers.push(disposeStatus);
+    const disposeSessions = webServer?.register({ kind: "exact", path: "/dsh-bridge/sessions", handler: handleSessions });
+    if (disposeSessions) disposers.push(disposeSessions);
+    const disposeChat = webServer?.register({ kind: "exact", path: "/dsh-bridge/chat", handler: handleChat });
+    if (disposeChat) disposers.push(disposeChat);
+    const disposeHistory = webServer?.register({ kind: "prefix", path: "/dsh-bridge/sessions", handler: handleHistory });
+    if (disposeHistory) disposers.push(disposeHistory);
+    const disposeUpgrade = webServer?.registerUpgrade({ path: "/dsh-bridge/stream", handler: handleWsUpgrade });
+    if (disposeUpgrade) disposers.push(disposeUpgrade);
 
-    // ---------- GET /dsh-bridge/sessions (精确) ----------
-    {
-      const dispose = webServer?.register({
-        kind: "exact",
-        path: "/dsh-bridge/sessions",
-        handler: (req, res) => {
-          if (!authorized(req)) return unauthorized(res);
-          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ sessions: metas }));
-        },
-      });
-      if (dispose) disposers.push(dispose);
-    }
-
-    // ---------- POST /dsh-bridge/chat ----------
-    {
-      const dispose = webServer?.register({
-      kind: "exact",
-      path: "/dsh-bridge/chat",
-      handler: async (req, res) => {
-        if (!authorized(req)) return unauthorized(res);
+    // 可选局域网监听：只暴露 /dsh-bridge/*（token 鉴权），其余路径一律 404
+    let lanServer = null;
+    if (lanListen) {
+      lanServer = createServer((req, res) => {
+        let path;
         try {
-          const body = await readBody(req);
-          const input = readJson(body);
-          if (!input || !input.message || !input.message.trim()) {
-            res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-            res.end(JSON.stringify({ ok: false, error: "message is required" }));
-            return;
-          }
-          const { agent, id } = await ensureAgent(input.cwd, input.sessionId);
-          // 不 await 本轮结束：agent 在后台异步执行，执行过程通过 WS 事件流推送。
-          // 这样客户端可以先拿到 sessionId 并打开 WS 订阅，再实时接收 assistant/chunk。
-          agent.followup(
-            createUserMessage({
-              content: [{ type: "text", text: input.message }],
-              source: { kind: "user" },
-            }),
-          );
-          // 后台等待停稳，更新元数据
-          void (async () => {
-            try {
-              await runUpdate(active.get(id).handle);
-            } catch (e) {
-              console.error(`[dsh-baihua-bridge] chat run error: ${e instanceof Error ? e.message : e}`);
-            }
-          })();
-          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(
-            JSON.stringify({
-              ok: true,
-              sessionId: id,
-              messageCount: countUserMessages(agent.session.events),
-            }),
-          );
-        } catch (e) {
-          res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-        }
-      },
-      });
-      if (dispose) disposers.push(dispose);
-    }
-
-    // ---------- GET /dsh-bridge/sessions/{id}/history (前缀) ----------
-    {
-      const dispose = webServer?.register({
-      kind: "prefix",
-      path: "/dsh-bridge/sessions",
-      handler: async (req, res) => {
-        const m = /^\/dsh-bridge\/sessions\/([^/]+)\/history$/.exec(req.url ?? "/");
-        if (!m) {
-          res.writeHead(404);
+          path = new URL(req.url ?? "/", "http://localhost").pathname;
+        } catch {
+          res.writeHead(400);
           res.end();
           return;
         }
-        if (!authorized(req)) return unauthorized(res);
-        const id = decodeURIComponent(m[1]);
-        try {
-          const live = active.get(id)?.handle.agent;
-          let events;
-          if (live) {
-            events = live.session.events;
-          } else {
-            // 非活跃会话：走 DSH 官方持久化服务读取（JSONL 后端支持原始 artifact 读取，
-            // 自动处理项目目录分组与 zstd 解压），不再自行猜测磁盘布局。
-            const persistence = ctx.get("sessionPersistence");
-            const raw =
-              persistence && persistence.supportsRawArtifacts
-                ? await persistence.readRaw(SessionId(id))
-                : undefined;
-            if (!raw) {
-              res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-              res.end(
-                JSON.stringify({
-                  ok: false,
-                  error: `session ${id} is not live and has no persisted log`,
-                }),
-              );
-              return;
-            }
-            events = raw.content
-              .split(/\r?\n/)
-              .map(readJson)
-              .filter(Boolean);
-          }
-          const existing = metas.find((x) => x.id === id);
-          upsertMeta({
-            id,
-            title: titleForEvents(events),
-            cwd: live?.session.header.cwd ?? existing?.cwd,
-            createdAt: live?.session.header.createdAt ?? existing?.createdAt ?? Date.now(),
-            updatedAt: Date.now(),
-            messageCount: countUserMessages(events),
-          });
-          // 按 maxBufferedText 截断序列化体积，避免单次响应过大
-          const parts = [];
-          let total = 0;
-          let truncated = false;
-          for (const e of events) {
-            const s = JSON.stringify(eventToJson(id, e));
-            if (maxBufferedText > 0 && total + s.length > maxBufferedText) {
-              truncated = true;
-              break;
-            }
-            total += s.length;
-            parts.push(s);
-          }
-          const title = titleForEvents(events);
-          const body =
-            `{"sessionId":${JSON.stringify(id)},"title":${JSON.stringify(title)},` +
-            `"events":[${parts.join(",")}]${truncated ? `,"truncated":true` : ""}}`;
-          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(body);
-        } catch (e) {
-          res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-        }
-      },
-      });
-      if (dispose) disposers.push(dispose);
-    }
-
-    // ---------- WS upgrade: /dsh-bridge/stream?sessionId=xxx&token= ----------
-    {
-      const dispose = webServer?.registerUpgrade({
-      path: "/dsh-bridge/stream",
-      handler: (req, socket, head) => {
-        const url = new URL(req.url ?? "/", "http://localhost");
-        if (bridgeToken && url.searchParams.get("token") !== bridgeToken) {
-          socket.write(
-            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n" +
-              JSON.stringify({ ok: false, error: "unauthorized" }),
-          );
-          socket.destroy();
+        if (path === "/dsh-bridge/status") return handleStatus(req, res);
+        if (path === "/dsh-bridge/sessions") return handleSessions(req, res);
+        if (path === "/dsh-bridge/chat") {
+          void handleChat(req, res);
           return;
         }
-        const sessionId = url.searchParams.get("sessionId") ?? "";
-        const cwd = url.searchParams.get("cwd") ?? undefined;
-        wss.handleUpgrade(req, socket, head, (ws) => {
-          const send = (obj) => {
-            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-          };
-          const subscribe = (sid) => {
-            if (!active.has(sid)) {
-              send({ kind: "error", message: `session ${sid} not active` });
-              ws.close();
-              return;
-            }
-            subscribeSocket(sid, ws);
-            send({ kind: "connected", sessionId: sid });
-          };
-          if (sessionId) {
-            // 续聊已存在的会话
-            subscribe(sessionId);
-            return;
-          }
-          // 未指定 sessionId：新建一个 agent 会话，先回客户端 sessionId 供 POST /chat 使用
-          ensureAgent(cwd, undefined)
-            .then(({ id }) => {
-              if (ws.readyState === WebSocket.OPEN) {
-                send({ kind: "session", sessionId: id });
-              }
-              subscribe(id);
-            })
-            .catch((e) => {
-              send({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-              try {
-                ws.close();
-              } catch {
-                /* noop */
-              }
-            });
-        });
-      },
+        if (/^\/dsh-bridge\/sessions\/[^/]+\/history$/.test(path)) {
+          void handleHistory(req, res);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
       });
-      if (dispose) disposers.push(dispose);
+      lanServer.on("upgrade", handleWsUpgrade);
+      lanServer.listen(lanPort, lanHost);
+      console.log(`[dsh-baihua-bridge] 桥接接口已额外监听 ${lanHost}:${lanPort}（仅 /dsh-bridge/*）`);
     }
 
     // 事件转发监听（Cordis 会在 fiber 卸载时自动移除 ctx.on 监听器）
@@ -514,6 +555,13 @@ export function apply(ctx, config) {
       } catch {
         /* noop */
       }
+      if (lanServer) {
+        try {
+          lanServer.close();
+        } catch {
+          /* noop */
+        }
+      }
       for (const dispose of disposers) {
         try {
           dispose();
@@ -524,5 +572,7 @@ export function apply(ctx, config) {
     };
   });
 
-  console.log(`[dsh-baihua-bridge] loaded${bridgeToken ? " (token auth enabled)" : " (open, loopback only)"}.`);
+  console.log(
+    `[dsh-baihua-bridge] loaded${bridgeToken ? " (token auth enabled)" : " (open, loopback only)"}${lanListen ? `, lan ${lanListen}` : ""}.`,
+  );
 }

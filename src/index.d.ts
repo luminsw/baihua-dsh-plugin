@@ -11,6 +11,8 @@ export interface BridgeConfig {
   fallbackProvider?: string;
   /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的模型。 */
   fallbackModel?: string;
+  /** 可选：把桥接接口额外暴露到指定地址（如 "0.0.0.0:3081"），仅 /dsh-bridge/*，需配 token。 */
+  lanListen?: string;
 }
 
 /** 插件名（Cordis 约定）。 */

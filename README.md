@@ -41,11 +41,15 @@
 属于高权限接口，请遵守：
 
 - **保持 `webServer` 绑定 `127.0.0.1`**（`dsh web` 默认值）。绝不要用 `0.0.0.0`
-  直接暴露桥接到局域网/公网。
+  直接暴露 DSH 本体到局域网/公网（DSH 会拒绝 `--host 0.0.0.0`）。
+- 需要让**局域网内的百花**（如 k8s 容器里的百花 Web）访问桥接接口时，配置
+  `lanListen`（如 `"0.0.0.0:3081"`）：插件会起一个**只暴露 `/dsh-bridge/*`** 的
+  小服务（同样带 token 鉴权，其余路径一律 404），DSH 核心 webServer 仍只监听
+  127.0.0.1，不会把 DSH 的远程执行界面暴露到网络。
 - 建议配置共享密钥 `token`（在 `cordis.patch.yml` 的插件 `config` 中设置）。
   启用后，除 `/status` 外的所有 HTTP 接口要求 `Authorization: Bearer <token>`
   或查询参数 `?token=<token>`；WebSocket 升级要求 `?token=<token>`。百花侧
-  通过 `DshApi:Token` 配置同步填入。
+  通过 `DshApi:Token` 配置同步填入。**配置 `lanListen` 为非回环地址时必须设置 token**。
 - 本插件**不做**速率限制 / 审计。若需要，请在反向代理层补充。
 
 ## 安装与加载
