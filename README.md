@@ -14,8 +14,14 @@
 | POST | `/dsh-bridge/chat` | body `{ message, cwd?, sessionId? }` — 新建或续聊会话（非阻塞），返回 `{ ok, sessionId }` |
 | GET  | `/dsh-bridge/sessions/{id}/history` | 返回某会话的全部事件（JSON 数组），供回放 |
 | WS   | `/dsh-bridge/stream?sessionId=xxx&cwd=&token=` | 订阅会话事件流（每行一个 JSON 事件）；不带 `sessionId` 时由插件新建会话并先回 `{ kind: "session", sessionId }` |
+| GET  | `/dsh-bridge/bh/status` | 百花服务运维状态（各服务就绪副本/镜像/重启数 + 运行中的长操作；配置 `bhCommand` 后可用，需 token） |
+| POST | `/dsh-bridge/bh/action` | body `{ action, service? }` — `start/stop/restart <svc>`（快速）或 `build [svc]/update/up/deploy`（后台，返回 `opId`） |
+| GET  | `/dsh-bridge/bh/ops` / `/dsh-bridge/bh/ops/{opId}` | 长操作列表 / 单个操作进度与最近输出 |
+| GET  | `/dsh-bridge/bh/logs?service=&lines=` | 查看指定服务最近日志 |
 
-> 除 `/status` 外的所有接口受 `token` 配置保护（见下文「安全」）。
+> 除 `/status` 外的所有接口受 `token` 配置保护（见下文「安全」）。`/dsh-bridge/bh/*`
+> 还会注册同名 DSH 工具（`bh_status` / `bh_start` / `bh_stop` / `bh_restart` /
+> `bh_build` / `bh_update` / `bh_logs` / `bh_op_status`），供 agent 直接调用。
 
 ### 事件流格式（每行一个 JSON）
 

@@ -17,13 +17,15 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import z from "@deepseek-ai/schemastery";
+import { defineTool } from "@deepseek-ai/dsh-tools";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
+import { createBhOps } from "./ops.js";
 
 export const name = "dsh-baihua-bridge";
 
-export const inject = ["agents", "sessions", "webServer"];
+export const inject = ["agents", "sessions", "webServer", "tools"];
 
 export const Config = z.object({
   /** history 响应体大小上限（字节）；超出部分截断并标记 truncated。 */
@@ -40,6 +42,13 @@ export const Config = z.object({
    * 不会把 DSH 的远程执行界面暴露到网络。设置非回环地址时必须同时配置 token。
    */
   lanListen: z.string().default(""),
+  /**
+   * 百花服务运维（bh CLI）入口。留空（""）则禁用运维端点与工具；
+   * 默认 "bh"（宿主机 PATH 中），也可填绝对路径如
+   * "/home/lumin/src/mdyj/baihuagu/tools/bh/bh.sh"。注意：这些操作会
+   * 以宿主机用户权限执行启停/编译/更新，必须配合 token 鉴权。
+   */
+  bhCommand: z.string().default("bh"),
 });
 
 /** 从第一条用户消息抽取会话标题候选。 */
@@ -304,6 +313,154 @@ export function apply(ctx, config) {
   const webServer = ctx.get("webServer");
   const wss = new WebSocketServer({ noServer: true });
 
+  // ---------- 百花服务运维（bh CLI）----------
+  const bhOps = config.bhCommand ? createBhOps(config) : null;
+  const registerBhTools = () => {
+    if (!bhOps) return;
+    const j = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
+    ctx.tools.register(
+      defineTool({
+        name: "bh_status",
+        description:
+          "查询百花服务的运行状态（family/ai/vault/webui/openvino/postgres 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。宿主机运维工具，只读。",
+        parameters: {},
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute() {
+          const r = await bhOps.status();
+          return r.ok ? j(r.status) + (r.runningOps?.length ? `\n\n运行中的操作：\n${j(r.runningOps)}` : "") : `失败：${r.error}`;
+        },
+      }),
+    );
+    for (const name of ["start", "stop", "restart"]) {
+      ctx.tools.register(
+        defineTool({
+          name: `bh_${name}`,
+          description: `对百花某个服务执行 ${name}（family/ai/vault/webui/openvino/postgres，可省略 bh- 前缀）。宿主机运维操作，执行前请先向用户确认。`,
+          parameters: { service: { type: "string", required: true, description: "服务名，如 family / ai / webui" } },
+          output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+          async execute(args) {
+            const r = bhOps.action(name, String(args.service));
+            return r.ok ? `✅ bh ${name} ${args.service}：${r.stdout || "完成"}` : `❌ bh ${name} 失败：${r.stderr || r.stdout || "未知错误"}`;
+          },
+        }),
+      );
+    }
+    ctx.tools.register(
+      defineTool({
+        name: "bh_build",
+        description:
+          "编译百花镜像（可指定服务 family/ai/vault/webui/openvino，省略则编译全部）。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
+        parameters: { service: { type: "string", description: "要编译的服务（可选，默认全部）" } },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const r = bhOps.startLongAction("build", args.service ? String(args.service) : "");
+          return r.ok
+            ? `已开始编译（opId=${r.opId}）。用 bh_op_status 查询进度，或用 bh_logs 看服务日志。`
+            : `启动失败：${r.error}`;
+        },
+      }),
+    );
+    ctx.tools.register(
+      defineTool({
+        name: "bh_update",
+        description:
+          "百花一键更新：git pull 最新代码 → 编译变更涉及的镜像 → 重新部署（等同 bh update）。耗时可能很长，后台执行，返回 opId。执行前请务必先向用户确认。",
+        parameters: {},
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute() {
+          const r = bhOps.startLongAction("update");
+          return r.ok ? `已开始更新（opId=${r.opId}）。用 bh_op_status 查询进度。` : `启动失败：${r.error}`;
+        },
+      }),
+    );
+    ctx.tools.register(
+      defineTool({
+        name: "bh_logs",
+        description: "查看百花某个服务的最近日志（默认 50 行，最多 500）。参数 service 如 family/ai/webui。",
+        parameters: {
+          service: { type: "string", required: true, description: "服务名，如 family / ai / webui" },
+          lines: { type: "integer", description: "行数（默认 50）" },
+        },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const r = bhOps.logs(String(args.service), Number(args.lines) || 50);
+          return r.ok ? (r.stdout || "(空)") : `❌ 获取日志失败：${r.stderr || r.stdout || "未知错误"}`;
+        },
+      }),
+    );
+    ctx.tools.register(
+      defineTool({
+        name: "bh_op_status",
+        description: "查询 bh 长操作（编译/更新）的进度与最近输出。参数 opId 来自 bh_build / bh_update 的返回值。",
+        parameters: { opId: { type: "string", required: true, description: "操作 ID，如 op-1724..." } },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const op = bhOps.opStatus(String(args.opId));
+          return op ? j(op) : "未找到该操作（可能进程已重启，操作记录不持久）。";
+        },
+      }),
+    );
+  };
+  registerBhTools();
+
+  // ---------- 百花服务运维 HTTP 端点（/dsh-bridge/bh/*，全部 token 鉴权） ----------
+  function sendJson(res, code, obj) {
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(obj));
+  }
+
+  function handleBh(req, res) {
+    if (!authorized(req)) return unauthorized(res);
+    if (!bhOps) return sendJson(res, 503, { ok: false, error: "bh 运维未启用（未配置 bhCommand）" });
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
+    const m = () => {
+      // 读取 POST body（仅 action 需要）
+      return new Promise((resolve) => {
+        if (req.method !== "POST") return resolve(null);
+        readBody(req).then(resolve, () => resolve(null));
+      });
+    };
+    if (path === "/dsh-bridge/bh/status" && req.method === "GET") {
+      void bhOps.status().then((r) => (r.ok ? sendJson(res, 200, r) : sendJson(res, 502, { ok: false, error: r.error })));
+      return;
+    }
+    if (path === "/dsh-bridge/bh/ops" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, ops: bhOps.listOps() });
+      return;
+    }
+    const opM = /^\/dsh-bridge\/bh\/ops\/([^/]+)$/.exec(path);
+    if (opM && req.method === "GET") {
+      const op = bhOps.opStatus(decodeURIComponent(opM[1]));
+      sendJson(res, op ? 200 : 404, op ? { ok: true, op } : { ok: false, error: "操作不存在" });
+      return;
+    }
+    if (path === "/dsh-bridge/bh/logs" && req.method === "GET") {
+      const r = bhOps.logs(url.searchParams.get("service") ?? "", url.searchParams.get("lines") ?? "");
+      sendJson(res, r.ok ? 200 : 502, r.ok ? { ok: true, stdout: r.stdout } : { ok: false, error: r.stderr || r.stdout || "获取日志失败" });
+      return;
+    }
+    if (path === "/dsh-bridge/bh/action" && req.method === "POST") {
+      void m().then((input) => {
+        const body = input ? readJson(input) : null;
+        const action = String(body?.action ?? "");
+        const service = String(body?.service ?? "");
+        if (bhOps.action && ["start", "stop", "restart"].includes(action)) {
+          const r = bhOps.action(action, service);
+          return sendJson(res, r.ok ? 200 : 400, r);
+        }
+        if (["build", "update", "up", "deploy"].includes(action)) {
+          const r = bhOps.startLongAction(action, service);
+          return sendJson(res, r.ok ? 200 : 400, r);
+        }
+        return sendJson(res, 400, { ok: false, error: `不支持的操作: ${action}` });
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  }
+
   // ==================== 桥接路由处理器（webServer 与局域网监听共用） ====================
 
   // GET /dsh-bridge/status（健康检查，不鉴权）
@@ -504,6 +661,8 @@ export function apply(ctx, config) {
     if (disposeChat) disposers.push(disposeChat);
     const disposeHistory = webServer?.register({ kind: "prefix", path: "/dsh-bridge/sessions", handler: handleHistory });
     if (disposeHistory) disposers.push(disposeHistory);
+    const disposeBh = bhOps ? webServer?.register({ kind: "prefix", path: "/dsh-bridge/bh", handler: handleBh }) : null;
+    if (disposeBh) disposers.push(disposeBh);
     const disposeUpgrade = webServer?.registerUpgrade({ path: "/dsh-bridge/stream", handler: handleWsUpgrade });
     if (disposeUpgrade) disposers.push(disposeUpgrade);
 
@@ -527,6 +686,10 @@ export function apply(ctx, config) {
         }
         if (/^\/dsh-bridge\/sessions\/[^/]+\/history$/.test(path)) {
           void handleHistory(req, res);
+          return;
+        }
+        if (path.startsWith("/dsh-bridge/bh")) {
+          handleBh(req, res);
           return;
         }
         res.writeHead(404);
