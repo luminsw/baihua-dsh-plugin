@@ -33,10 +33,11 @@
 
 ### 百花能力 MCP server（标准对外通道）
 
-本仓库 `mcp-server/` 子目录是一个独立 MCP server（`@modelcontextprotocol/sdk`，stdio），
-把上述**只读数据工具**按标准 MCP 暴露给任意 MCP 客户端（DSH 经 `@deepseek-ai/dsh-mcp-client`
-接入后工具名带 `mcp__baihua__` 前缀）。连接目标经 `BAIHUA_VAULT_URL` / `BAIHUA_FAMILY_URL`
-环境变量配置（默认 127.0.0.1:8790/8788）。详见仓库 `docs/DSH_INTEGRATION.md` 的 6.5 节。
+独立的 [`luminsw/baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server)
+仓库（`@modelcontextprotocol/sdk`，stdio），把上述**只读数据工具**按标准 MCP 暴露给任意
+MCP 客户端（DSH 经 `@deepseek-ai/dsh-mcp-client` 接入后工具名带 `mcp__baihua__` 前缀）。
+连接目标经 `BAIHUA_VAULT_URL` / `BAIHUA_FAMILY_URL` 环境变量配置（默认 127.0.0.1:8790/8788）。
+详见百花仓库 `docs/DSH_INTEGRATION.md` 的 6.5 节。
 
 ### 事件流格式（每行一个 JSON）
 

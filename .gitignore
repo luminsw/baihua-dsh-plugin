@@ -17,4 +17,3 @@ Thumbs.db
 # env / secrets
 .env
 *.local
-mcp-server/package-lock.json
