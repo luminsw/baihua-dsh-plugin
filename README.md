@@ -23,6 +23,21 @@
 > 还会注册同名 DSH 工具（`bh_status` / `bh_start` / `bh_stop` / `bh_restart` /
 > `bh_build` / `bh_update` / `bh_logs` / `bh_op_status`），供 agent 直接调用。
 
+### 百花数据/能力工具（DSH 工具，agent 直接可用）
+
+| 工具 | 说明 | 依赖配置 |
+|---|---|---|
+| `baihua_vault_search` / `baihua_vault_list` / `baihua_vault_read_note` | 知识库检索/列表/读笔记 | `vaultUrl` |
+| `baihua_budget_summary` / `baihua_tasks_list` | 家庭记账汇总 / 任务列表 | `familyUrl` |
+| `baihua_draw` | ComfyUI 出图（txt2img） | `comfyUrl` / `comfyCheckpoint` |
+
+### 百花能力 MCP server（标准对外通道）
+
+本仓库 `mcp-server/` 子目录是一个独立 MCP server（`@modelcontextprotocol/sdk`，stdio），
+把上述**只读数据工具**按标准 MCP 暴露给任意 MCP 客户端（DSH 经 `@deepseek-ai/dsh-mcp-client`
+接入后工具名带 `mcp__baihua__` 前缀）。连接目标经 `BAIHUA_VAULT_URL` / `BAIHUA_FAMILY_URL`
+环境变量配置（默认 127.0.0.1:8790/8788）。详见仓库 `docs/DSH_INTEGRATION.md` 的 6.5 节。
+
 ### 事件流格式（每行一个 JSON）
 
 - `turn/start` / `turn/end` / `step/start` / `step/end`：回合 / 步骤边界
