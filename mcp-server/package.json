@@ -1,0 +1,22 @@
+{
+  "name": "baihua-mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "百花（Baihua）能力 MCP server——把知识库检索/笔记、家庭记账/任务等只读能力以标准 MCP 工具暴露给任何 MCP 客户端（含 DSH 的 dsh-mcp-client）。",
+  "type": "module",
+  "main": "src/index.js",
+  "files": [
+    "src"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "baihua",
+    "dsh",
+    "deepseek-harness"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  }
+}
