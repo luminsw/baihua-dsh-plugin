@@ -132,61 +132,70 @@ window.__ModuleLoader__.load({
         { style: base },
         React.createElement(
           "div",
-          { style: { display: "flex", alignItems: "center", gap: 8, fontWeight: 600, marginBottom: 6 } },
+          { style: { marginBottom: 6 } },
           React.createElement(
-            "span",
-            null,
-            "百花服务状态" + (summary ? `（${summary.ready}/${summary.total} 就绪）` : "") + headBadge
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 15 } },
+            React.createElement(
+              "span",
+              { style: { fontSize: 15, fontWeight: 600, lineHeight: 1.4, color: "var(--dsw-alias-label-primary)" } },
+              "百花服务状态" + (summary ? `（${summary.ready}/${summary.total} 就绪）` : "") + headBadge
+            ),
+            React.createElement(
+              "button",
+              {
+                style: btn,
+                disabled: busy,
+                onClick: () => runAction("build-restart", "family"),
+                title: "编译并重启 family",
+              },
+              "🔧编译 family"
+            ),
+            React.createElement(
+              "button",
+              {
+                style: btn,
+                disabled: busy,
+                onClick: () => runAction("build-restart", "webui"),
+                title: "编译并重启 webui",
+              },
+              "🔧编译 webui"
+            ),
+            React.createElement(
+              "button",
+              {
+                style: btn,
+                disabled: busy,
+                onClick: () => runAction("update"),
+                title: "一键更新：git pull + 编译变更镜像 + 部署",
+              },
+              "🔄一键更新"
+            ),
+            React.createElement(
+              "button",
+              {
+                style: btn,
+                disabled: busy,
+                onClick: () => runAction("git-commit-push", ""),
+                title: "提交并推送百花仓库（git add -A + commit + push）",
+              },
+              "⬆️提交推送"
+            ),
+            React.createElement(
+              "button",
+              {
+                style: btn,
+                disabled: busy,
+                onClick: () => openBaihua(setMsg),
+                title: "获取百花 cli-token 并打开 WebUI 首页（自动登录）",
+              },
+              "🌐打开百花"
+            )
           ),
           React.createElement(
-            "button",
-            {
-              style: btn,
-              disabled: busy,
-              onClick: () => runAction("build-restart", "family"),
-              title: "编译并重启 family",
-            },
-            "🔧编译 family"
-          ),
-          React.createElement(
-            "button",
-            {
-              style: btn,
-              disabled: busy,
-              onClick: () => runAction("build-restart", "webui"),
-              title: "编译并重启 webui",
-            },
-            "🔧编译 webui"
-          ),
-          React.createElement(
-            "button",
-            {
-              style: btn,
-              disabled: busy,
-              onClick: () => runAction("update"),
-              title: "一键更新：git pull + 编译变更镜像 + 部署",
-            },
-            "🔄一键更新"
-          ),
-          React.createElement(
-            "button",
-            {
-              style: btn,
-              disabled: busy,
-              onClick: () => runAction("git-commit-push", ""),
-              title: "提交并推送百花仓库（git add -A + commit + push）",
-            },
-            "⬆️提交推送"
-          ),
-          React.createElement(
-            "button",
-            {
-              style: btn,
-              disabled: busy,
-              onClick: () => openBaihua(setMsg),
-              title: "获取百花 cli-token 并打开 WebUI 首页（自动登录）",
-            },
-            "🌐打开百花"
+            "div",
+            { style: { fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)", marginTop: 2 } },
+            "百花 k8s 服务运行状态与版本对比，可在卡片上直接启停/编译/更新。"
           )
         ),
         err
