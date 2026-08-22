@@ -10,7 +10,8 @@
  * 所有对外入口（HTTP / 工具）都必须经过桥接 token 鉴权。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
 
 const QUICK_TIMEOUT_MS = 60_000;
 const STATUS_TIMEOUT_MS = 20_000;
@@ -21,8 +22,26 @@ const LONG_ACTIONS = new Set(["build", "update", "up", "deploy", "build-restart"
 /** 快速操作允许的命令。 */
 const QUICK_ACTIONS = new Set(["start", "stop", "restart"]);
 
+/** 由 bh 可执行文件路径推断百花仓库根：从 bhCommand 所在目录向上逐级找 .git。 */
+function inferRepoRoot(bhCommand) {
+  try {
+    let dir = resolve(dirname(bhCommand));
+    for (let i = 0; i < 8; i++) {
+      if (existsSync(join(dir, ".git"))) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    /* fallthrough */
+  }
+  return process.cwd();
+}
+
 export function createBhOps(config) {
   const bhCommand = config.bhCommand || "bh";
+  /** git 提交/推送的仓库根：显式配置 gitRepo 优先，否则按 bhCommand 推断。 */
+  const gitRepo = config.gitRepo || inferRepoRoot(bhCommand);
   const ops = new Map();
   let seq = 0;
 
@@ -99,7 +118,7 @@ export function createBhOps(config) {
     };
   }
 
-  /** 状态总览（bh status --json 解析 + 运行中的长操作）。 */
+  /** 状态总览（bh status --json 解析 + 运行中的长操作 + 最近完成操作）。 */
   async function status() {
     const r = runQuick(["status", "--json"], STATUS_TIMEOUT_MS);
     if (!r.ok) {
@@ -110,7 +129,27 @@ export function createBhOps(config) {
     }
     try {
       const parsed = JSON.parse(r.stdout);
-      return { ok: true, status: parsed, runningOps: [...ops.values()].map(opView) };
+      const all = [...ops.values()];
+      const now = Date.now();
+      // 清理已结束超过 1 小时的 op（避免内存/列表无限膨胀）
+      for (const op of all) {
+        if (!op.running && now - new Date(op.startedAt).getTime() >= 60 * 60 * 1000) {
+          ops.delete(op.id);
+        }
+      }
+      const remaining = [...ops.values()];
+      return {
+        ok: true,
+        status: parsed,
+        // 只含真正运行中的（已完成的不算"进行中"，避免卡片永远显示有操作）
+        runningOps: remaining.filter((op) => op.running).map(opView),
+        // 最近完成的（供"最近操作"列表展示），按开始时间倒序，最多 10 条
+        recentOps: remaining
+          .filter((op) => !op.running)
+          .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
+          .slice(0, 10)
+          .map(opView),
+      };
     } catch {
       return { ok: false, error: `bh status 输出不是 JSON：${r.stdout.slice(0, 300)}` };
     }
@@ -220,5 +259,152 @@ export function createBhOps(config) {
     return { ok: r.ok, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
 
-  return { status, action, startLongAction, listOps, opStatus, logs };
+  /**
+   * 重启 DSH 自身（宿主机 dsh web 进程）。
+   * 注意：插件运行在 DSH 进程内，kill 掉 DSH 就是杀掉自己——因此必须 spawn 一个
+   * detached 独立进程：sleep 1s 等 HTTP 响应发出 → pkill 当前 dsh → sleep 等端口释放
+   * → nohup 重新拉起。调用方立即得到 { ok: true }，实际重启在后台进行。
+   */
+  function restartDsh() {
+    if (process.platform === "win32") {
+      const script = [
+        "Start-Sleep -Seconds 1",
+        "Get-CimInstance Win32_Process -Filter \"Name like '%node%'\" | Where-Object { $_.CommandLine -like '*dsh*web*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+        "Start-Sleep -Seconds 2",
+        "Start-Process -FilePath 'npm' -ArgumentList 'exec','@deepseek-ai/dsh','web' -WorkingDirectory $HOME -RedirectStandardOutput \"$env:TEMP\\dsh-restart.log\" -RedirectStandardError \"$env:TEMP\\dsh-restart.err.log\" -WindowStyle Hidden",
+      ].join("; ");
+      try {
+        const child = spawn("powershell", ["-NoProfile", "-Command", script], {
+          detached: true,
+          stdio: "ignore",
+        });
+        child.unref();
+        return { ok: true, message: "DSH 正在重启（约 10-30 秒），期间桥接短暂不可用" };
+      } catch (e) {
+        return { ok: false, error: e.message };
+      }
+    }
+    // Linux/macOS：pkill 后 nohup 重启（命令 & 脱离，detached + unref 不随父进程死）
+    const script = [
+      "sleep 1",
+      'pkill -f "node .*bin/dsh web" || true',
+      "sleep 2",
+      'cd "$HOME" && nohup npm exec @deepseek-ai/dsh web >"$HOME/.dsh-restart.log" 2>&1 &',
+    ].join(" && ");
+    try {
+      const child = spawn("/bin/bash", ["-c", script], {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+      return { ok: true, message: "DSH 正在重启（约 10-30 秒），期间桥接短暂不可用" };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /**
+   * 提交并推送百花仓库（git add -A → commit → push），作为长操作（opId + tail）。
+   * 在 gitRepo 目录执行；commit message 由调用方传入（UI 输入）。push 失败（网络/认证）
+   * 时 exit 非 0，tail 会包含 git 输出。
+   */
+  function startGitCommitPush(message) {
+    const id = `op-${Date.now()}-${++seq}`;
+    const logPath = `/tmp/bh-${id}.log`;
+    let tail = "";
+    const append = (s) => {
+      tail = (tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
+    };
+    const entry = {
+      id,
+      action: "git-commit-push",
+      service: message ?? "",
+      startedAt: new Date().toISOString(),
+      running: true,
+      exitCode: null,
+      logPath,
+    };
+    ops.set(id, entry);
+
+    const run = (args, label) =>
+      new Promise((resolve) => {
+        append(`\n===== ${label}（git ${args.join(" ")}）=====\n`);
+        const child = spawn("git", args, {
+          cwd: gitRepo,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child.stdout.on("data", (d) => append(d.toString()));
+        child.stderr.on("data", (d) => append(d.toString()));
+        child.on("close", (code) => {
+          append(`\n[${label}] exit code: ${code}\n`);
+          resolve(code);
+        });
+        child.on("error", (err) => {
+          append(`\n[${label}] spawn error: ${err.message}\n`);
+          entry.error = err.message;
+          resolve(-1);
+        });
+      });
+
+    void (async () => {
+      try {
+        if (process.platform === "win32") {
+          const ps = [
+            "git add -A",
+            `git commit -m ${JSON.stringify(String(message ?? "").replace(/"/g, '\\"'))}`,
+            "git push",
+          ];
+          // Windows 用 cmd 串行执行，tail 逐条记录
+          for (const cmd of ps) {
+            append(`\n===== ${cmd} =====\n`);
+            const code = await new Promise((resolve) => {
+              const child = spawn("cmd", ["/c", cmd], { cwd: gitRepo, stdio: ["ignore", "pipe", "pipe"] });
+              child.stdout.on("data", (d) => append(d.toString()));
+              child.stderr.on("data", (d) => append(d.toString()));
+              child.on("close", (c) => {
+                append(`\n[${cmd}] exit code: ${c}\n`);
+                resolve(c);
+              });
+              child.on("error", (err) => {
+                append(`\n[${cmd}] spawn error: ${err.message}\n`);
+                resolve(-1);
+              });
+            });
+            entry.exitCode = code;
+            if (code !== 0) break;
+          }
+        } else {
+          const addCode = await run(["add", "-A"], "add");
+          if (addCode !== 0) {
+            entry.exitCode = addCode;
+            return;
+          }
+          const msg = String(message ?? "").trim();
+          if (!msg) {
+            append("\n[commit] 未提供提交信息，跳过 commit/push。\n");
+            entry.exitCode = 0;
+            return;
+          }
+          const commitCode = await run(["commit", "-m", msg], "commit");
+          if (commitCode !== 0) {
+            // commit 失败（通常是无改动）→ 尝试 push 已有提交
+            append("\n[commit] 无变更或提交失败，继续尝试 push。\n");
+          }
+          entry.exitCode = await run(["push"], "push");
+        }
+      } finally {
+        entry.running = false;
+        append(`\n[git-commit-push] ${entry.exitCode === 0 ? "完成 ✅" : "失败（exit " + entry.exitCode + "）"}。\n`);
+      }
+    })();
+
+    return entry;
+  }
+
+  return { status, action, startLongAction, listOps, opStatus, logs, restartDsh, startGitCommitPush };
 }

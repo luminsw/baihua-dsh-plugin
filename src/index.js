@@ -55,6 +55,11 @@ export const Config = z.object({
    * 以宿主机用户权限执行启停/编译/更新，必须配合 token 鉴权。
    */
   bhCommand: z.string().default("bh"),
+  /**
+   * git 提交/推送操作的仓库根（默认按 bhCommand 所在路径推断百花仓库根；
+   * 也可显式配置，如 "/home/lumin/src/mdyj/baihuagu"）。
+   */
+  gitRepo: z.string().default(""),
   /** 百花 Vault 服务地址（知识库检索/笔记；默认本机回环，k8s 部署填 ClusterIP）。 */
   vaultUrl: z.string().default("http://127.0.0.1:8790"),
   /** 百花 Family 服务地址（家庭数据；默认本机回环，k8s 部署填 ClusterIP）。 */
@@ -344,12 +349,30 @@ export function apply(ctx, config) {
       defineTool({
         name: "bh_status",
         description:
-          "查询百花服务的运行状态（family/ai/vault/webui/openvino/postgres 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。宿主机运维工具，只读。",
+          "查询百花服务的运行状态（family/ai/vault/webui/openvino/postgres 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。包含源码版本对比：git.head（当前仓库 HEAD）与各服务 imageCommit（部署时记录的 commit），upToDate 为 false 说明该服务运行的不是当前 HEAD 构建的镜像（需 bh_build_restart 或 bh_update）。宿主机运维工具，只读。",
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute() {
           const r = await bhOps.status();
-          return r.ok ? j(r.status) + (r.runningOps?.length ? `\n\n运行中的操作：\n${j(r.runningOps)}` : "") : `失败：${r.error}`;
+          if (!r.ok) return `失败：${r.error}`;
+          const lines = [];
+          const st = r.status;
+          if (st.git) {
+            const g = st.git;
+            lines.push(
+              `git: HEAD=${g.head}（${g.branch}）${g.dirty ? " ⚠️ 工作区有未提交改动" : ""}`,
+            );
+            for (const s of st.services ?? []) {
+              if (s.upToDate === undefined || !s.imageCommit || s.imageCommit === "unknown") continue;
+              const mark = s.upToDate ? "✅ 最新" : "🕓 落后";
+              lines.push(`  ${s.name}: ${mark}（部署 ${s.imageCommit} vs HEAD ${g.head}）`);
+            }
+            lines.push("");
+          }
+          lines.push(j(st));
+          if (r.runningOps?.length) lines.push(`\n进行中的操作：\n${j(r.runningOps)}`);
+          if (r.recentOps?.length) lines.push(`\n最近完成的操作：\n${j(r.recentOps)}`);
+          return lines.join("\n");
         },
       }),
     );
@@ -434,6 +457,32 @@ export function apply(ctx, config) {
         async execute(args) {
           const op = bhOps.opStatus(String(args.opId));
           return op ? j(op) : "未找到该操作（可能进程已重启，操作记录不持久）。";
+        },
+      }),
+    );
+    ctx.tools.register(
+      defineTool({
+        name: "bh_dsh_restart",
+        description:
+          "重启本机 DSH（DeepSeek Harness）进程：kill 当前 dsh web 并重新拉起，约 10-30 秒后桥接恢复。重启期间当前会话/工具调用会中断，返回后请等待 DSH 恢复。宿主机运维操作，执行前请务必先向用户确认。",
+        parameters: {},
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute() {
+          const r = bhOps.restartDsh();
+          return r.ok ? `✅ ${r.message}` : `❌ 重启失败：${r.error}`;
+        },
+      }),
+    );
+    ctx.tools.register(
+      defineTool({
+        name: "bh_git_commit_push",
+        description:
+          "提交并推送百花仓库：git add -A → commit -m <message> → push（在百花仓库根执行，后台运行，返回 opId 用 bh_op_status 查询）。参数 message 为提交信息。宿主机运维操作，执行前请先向用户确认。",
+        parameters: { message: { type: "string", required: true, description: "git commit 提交信息" } },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const op = bhOps.startGitCommitPush(String(args.message ?? ""));
+          return op ? `已开始提交并推送（opId=${op.id}），用 bh_op_status 查询进度。` : `启动失败`;
         },
       }),
     );
@@ -547,6 +596,7 @@ export function apply(ctx, config) {
       sendJson(res, 200, {
         ok: true,
         updatedAt: r.status.updatedAt,
+        git: r.status.git ?? null,
         summary: r.status.summary,
         services: (r.status.services ?? []).map((s) => ({
           name: s.name,
@@ -554,9 +604,62 @@ export function apply(ctx, config) {
           replicas: s.replicas,
           phase: s.phase,
           restarts: s.restarts,
+          imageCommit: s.imageCommit,
+          upToDate: s.upToDate,
         })),
         runningOps: r.runningOps ?? [],
+        recentOps: r.recentOps ?? [],
       });
+    });
+  }
+
+  /**
+   * UI 操作端点（/dsh-bridge/bh/ui-action，POST）：供 DSH 设置页「百花服务状态」卡片上的
+   * 启动/停止/重启/编译/更新按钮调用。与 /dsh-bridge/bh/action 功能等价，但**免 token**——
+   * 靠同源校验防 CSRF（只接受 DSH 页面自身的请求），且仅注册在回环 webServer 上、
+   * 不暴露到 lanListen（局域网机器即使知道地址也调不到）。
+   */
+  function sameOriginRequest(req) {
+    const origin = req.headers?.origin;
+    if (origin) {
+      try {
+        const u = new URL(origin);
+        return u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1";
+      } catch {
+        return false;
+      }
+    }
+    // 无 Origin（同源请求有时不带）→ 用 Sec-Fetch-Site 兜底：same-origin / none 放行
+    const sfs = req.headers?.["sec-fetch-site"];
+    return sfs === "same-origin" || sfs === "none";
+  }
+
+  function handleUiAction(req, res) {
+    if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "method not allowed" });
+    if (!sameOriginRequest(req)) return sendJson(res, 403, { ok: false, error: "仅允许 DSH 页面同源调用" });
+    if (!bhOps) return sendJson(res, 503, { ok: false, error: "bh 运维未启用（未配置 bhCommand）" });
+    void readBody(req).then((input) => {
+      const body = readJson(input);
+      const action = String(body?.action ?? "");
+      const service = String(body?.service ?? "");
+      if (action === "dsh-restart") {
+        return sendJson(res, 200, bhOps.restartDsh());
+      }
+      if (action === "git-commit-push") {
+        const msg = String(body?.message ?? body?.service ?? "");
+        const op = bhOps.startGitCommitPush(msg);
+        return sendJson(res, 200, { ok: true, opId: op.id, action: "git-commit-push", service: msg });
+      }
+      if (["start", "stop", "restart"].includes(action)) {
+        if (!service) return sendJson(res, 400, { ok: false, error: "缺少 service" });
+        const r = bhOps.action(action, service);
+        return sendJson(res, r.ok ? 200 : 400, r);
+      }
+      if (["build", "build-restart", "update", "up", "deploy"].includes(action)) {
+        const r = bhOps.startLongAction(action, service);
+        return sendJson(res, r.ok ? 200 : 400, r);
+      }
+      return sendJson(res, 400, { ok: false, error: `不支持的操作: ${action}` });
     });
   }
 
@@ -596,6 +699,14 @@ export function apply(ctx, config) {
         const body = input ? readJson(input) : null;
         const action = String(body?.action ?? "");
         const service = String(body?.service ?? "");
+        if (action === "dsh-restart") {
+          return sendJson(res, 200, bhOps.restartDsh());
+        }
+        if (action === "git-commit-push") {
+          const msg = String(body?.message ?? body?.service ?? "");
+          const op = bhOps.startGitCommitPush(msg);
+          return sendJson(res, 200, { ok: true, opId: op.id, action: "git-commit-push", service: msg });
+        }
         if (bhOps.action && ["start", "stop", "restart"].includes(action)) {
           const r = bhOps.action(action, service);
           return sendJson(res, r.ok ? 200 : 400, r);
@@ -819,6 +930,11 @@ export function apply(ctx, config) {
       ? webServer?.register({ kind: "exact", path: "/dsh-bridge/bh/status-ui", handler: handleStatusUi })
       : null;
     if (disposeStatusUi) disposers.push(disposeStatusUi);
+    // UI 操作（卡片按钮用，同源免 token）：仅本机 webServer；LAN 走 /dsh-bridge/bh 前缀会被 token 拦截
+    const disposeUiAction = bhOps
+      ? webServer?.register({ kind: "exact", path: "/dsh-bridge/bh/ui-action", handler: handleUiAction })
+      : null;
+    if (disposeUiAction) disposers.push(disposeUiAction);
     const disposeUpgrade = webServer?.registerUpgrade({ path: "/dsh-bridge/stream", handler: handleWsUpgrade });
     if (disposeUpgrade) disposers.push(disposeUpgrade);
 
