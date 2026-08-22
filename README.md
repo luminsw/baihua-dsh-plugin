@@ -21,7 +21,23 @@
 
 > 除 `/status` 外的所有接口受 `token` 配置保护（见下文「安全」）。`/dsh-bridge/bh/*`
 > 还会注册同名 DSH 工具（`bh_status` / `bh_start` / `bh_stop` / `bh_restart` /
-> `bh_build` / `bh_update` / `bh_logs` / `bh_op_status`），供 agent 直接调用。
+> `bh_build` / `bh_update` / `bh_logs` / `bh_op_status` / `bh_build_restart` /
+> `bh_git_commit_push` / `bh_bootstrap`），供 agent 直接调用。
+
+### 首次接入：没有百花源码也能自动下载（`bh_bootstrap`）
+
+全新机器（没有百花源码、没装 bh）也能一键接入：agent 调用 `bh_bootstrap` 工具即可。
+
+流程（后台长操作，返回 opId 用 `bh_op_status` 查询）：
+
+1. **检测**：按 `BAIHUA_HOME` → 常见路径（`~/src/mdyj/baihua`、`~/src/baihua` 等）→ 当前目录向上，
+   找 `tools/bh/bh.sh` 作为百花源码标志；已存在则直接返回路径，不做任何改动。
+2. **克隆**：目标目录没有源码时，`git clone --depth 1`（浅克隆）到默认 `~/src/baihua`
+   （参数 `target` 可覆盖；`url` 默认 `https://github.com/luminsw/baihua.git`，可换镜像）。
+3. **安装**：克隆后自动执行仓库内 `bh install`，把自包含定位器装进 `~/.local/bin/bh`，
+   之后 `bh status` / `bh build` 等立即可用。
+
+插件启动时也会检测一次源码：缺失时打日志提示可用 `bh_bootstrap`，不阻塞启动。
 
 ### 百花数据/能力工具（DSH 工具，agent 直接可用）
 

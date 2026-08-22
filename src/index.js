@@ -22,7 +22,7 @@ import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { settingsNamespace, installSettingsSection } from "@deepseek-ai/dsh-settings";
-import { createBhOps } from "./ops.js";
+import { createBhOps, detectRepoRoot } from "./ops.js";
 import { createBaihuaApi } from "./baihua.js";
 import { createComfyClient } from "./comfy.js";
 
@@ -51,13 +51,13 @@ export const Config = z.object({
   /**
    * 百花服务运维（bh CLI）入口。留空（""）则禁用运维端点与工具；
    * 默认 "bh"（宿主机 PATH 中），也可填绝对路径如
-   * "/home/lumin/src/mdyj/baihuagu/tools/bh/bh.sh"。注意：这些操作会
+   * "/home/lumin/src/mdyj/baihua/tools/bh/bh.sh"。注意：这些操作会
    * 以宿主机用户权限执行启停/编译/更新，必须配合 token 鉴权。
    */
   bhCommand: z.string().default("bh"),
   /**
    * git 提交/推送操作的仓库根（默认按 bhCommand 所在路径推断百花仓库根；
-   * 也可显式配置，如 "/home/lumin/src/mdyj/baihuagu"）。
+   * 也可显式配置，如 "/home/lumin/src/mdyj/baihua"）。
    */
   gitRepo: z.string().default(""),
   /** 百花 Vault 服务地址（知识库检索/笔记；默认本机回环，k8s 部署填 ClusterIP）。 */
@@ -486,8 +486,46 @@ export function apply(ctx, config) {
         },
       }),
     );
+    ctx.tools.register(
+      defineTool({
+        name: "bh_bootstrap",
+        description:
+          "引导安装：检测本机是否已有百花源码（BAIHUA_HOME > 常见路径 ~/src/baihua 等 > 当前目录向上）。若没有，自动 git 浅克隆（--depth 1）到目标目录（默认 ~/src/baihua，参数 target 可覆盖），并自动执行 bh install 把 bh 定位器装进 PATH。克隆/安装耗时较长，后台执行，返回 opId 后用 bh_op_status 查询。适合全新机器首次接入百花。",
+        parameters: {
+          url: { type: "string", description: "克隆源地址（可选，默认 https://github.com/luminsw/baihua.git）" },
+          target: { type: "string", description: "目标目录（可选，默认 ~/src/baihua）" },
+          depth: { type: "number", description: "克隆深度（可选，默认 1 浅克隆）" },
+        },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const op = bhOps.startBootstrap({
+            url: args.url ? String(args.url) : undefined,
+            target: args.target ? String(args.target) : undefined,
+            depth: args.depth != null ? Number(args.depth) : undefined,
+            bhCommand: config.bhCommand,
+            gitRepo: config.gitRepo,
+          });
+          return op
+            ? `已开始引导安装（opId=${op.id}）。用 bh_op_status 查询进度。`
+            : `启动失败`;
+        },
+      }),
+    );
   };
   registerBhTools();
+
+  // ---------- 启动引导检测：本机没有百花源码时提示可用 bh_bootstrap 下载 ----------
+  try {
+    const detected = detectRepoRoot({ bhCommand: config.bhCommand, gitRepo: config.gitRepo });
+    if (!detected) {
+      console.warn(
+        `[dsh-baihua-bridge] 未检测到百花源码（~/src/baihua 等常见路径、BAIHUA_HOME、bhCommand 均无）。` +
+          `首次接入可让 agent 调用工具 bh_bootstrap 自动浅克隆到 ~/src/baihua 并安装 bh。`,
+      );
+    }
+  } catch {
+    /* 检测失败不阻塞启动 */
+  }
 
   // ---------- 百花数据只读工具（知识库/笔记/家庭）----------
   const baihuaApi = createBaihuaApi(config);

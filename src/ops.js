@@ -10,8 +10,9 @@
  * 所有对外入口（HTTP / 工具）都必须经过桥接 token 鉴权。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
+import { homedir } from "node:os";
 
 const QUICK_TIMEOUT_MS = 60_000;
 const STATUS_TIMEOUT_MS = 20_000;
@@ -22,11 +23,12 @@ const LONG_ACTIONS = new Set(["build", "update", "up", "deploy", "build-restart"
 /** 快速操作允许的命令。 */
 const QUICK_ACTIONS = new Set(["start", "stop", "restart"]);
 
-/** 由 bh 可执行文件路径推断百花仓库根：从 bhCommand 所在目录向上逐级找 .git。 */
+/** 由 bh 可执行文件路径推断百花仓库根：从 bhCommand 所在目录向上逐级找 tools/bh/bh.sh（或 .git）。 */
 function inferRepoRoot(bhCommand) {
   try {
     let dir = resolve(dirname(bhCommand));
     for (let i = 0; i < 8; i++) {
+      if (isBaihuaRepo(dir)) return dir;
       if (existsSync(join(dir, ".git"))) return dir;
       const parent = dirname(dir);
       if (parent === dir) break;
@@ -36,6 +38,66 @@ function inferRepoRoot(bhCommand) {
     /* fallthrough */
   }
   return process.cwd();
+}
+
+/** 百花仓库源码的常见候选根目录（Linux 与 Windows 通用，按平台展开 ~）。 */
+function defaultCloneCandidates() {
+  const home = homedir();
+  return [
+    join(home, "src", "mdyj", "baihua"),
+    join(home, "src", "mdyj", "baihuagu"),
+    join(home, "src", "baihua"),
+    join(home, "src", "baihuagu"),
+    join(home, "baihua"),
+    join(home, "work", "baihua"),
+  ];
+}
+
+/** 百花源码的可靠标志：仓库根下存在 tools/bh/bh.sh（仅 baihua 仓库有）。 */
+function isBaihuaRepo(root) {
+  return existsSync(join(root, "tools", "bh", "bh.sh"));
+}
+
+/** 检测本机是否已有百花源码：BAIHUA_HOME > 常见候选路径 > 当前目录向上。返回仓库根或 null。 */
+export function detectRepoRoot(opts = {}) {
+  const { bhCommand, gitRepo, extraCandidates = [] } = opts;
+  const tried = [];
+  const tryPath = (dir) => {
+    if (!dir) return null;
+    const root = resolve(dir);
+    if (tried.includes(root)) return null;
+    tried.push(root);
+    if (isBaihuaRepo(root)) return root;
+    return null;
+  };
+  // 1) 显式配置 gitRepo / BAIHUA_HOME
+  if (gitRepo) {
+    const r = tryPath(gitRepo);
+    if (r) return r;
+  }
+  if (process.env.BAIHUA_HOME) {
+    const r = tryPath(process.env.BAIHUA_HOME);
+    if (r) return r;
+  }
+  // 2) 常见候选路径
+  for (const c of [...extraCandidates, ...defaultCloneCandidates()]) {
+    const r = tryPath(c);
+    if (r) return r;
+  }
+  // 3) 从 bhCommand 推断（bh 指向定位器时其目标仓库即源码）
+  if (bhCommand) {
+    const r = tryPath(inferRepoRoot(bhCommand));
+    if (r) return r;
+  }
+  // 4) 当前目录向上找 tools/bh/bh.sh
+  let dir = process.cwd();
+  for (let i = 0; i < 10; i++) {
+    if (isBaihuaRepo(dir)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 export function createBhOps(config) {
@@ -406,5 +468,131 @@ export function createBhOps(config) {
     return entry;
   }
 
-  return { status, action, startLongAction, listOps, opStatus, logs, restartDsh, startGitCommitPush };
+  /**
+   * 引导安装：若本机还没有百花源码，自动 git clone 到目标目录并执行 bh install
+   * （把自包含定位器装进 PATH），之后 bh 立即可用。作为长操作（opId + tail）。
+   * 若检测到已有源码，直接返回其路径，不做任何改动。
+   *
+   * @param {object} o - { url, target, depth, bhCommand, gitRepo }
+   */
+  function startBootstrap(o = {}) {
+    const id = `op-${Date.now()}-${++seq}`;
+    const logPath = `/tmp/bh-${id}.log`;
+    let tail = "";
+    const append = (s) => {
+      tail = (tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
+    };
+    const entry = {
+      id,
+      action: "bootstrap",
+      service: o.url ?? "",
+      startedAt: new Date().toISOString(),
+      running: true,
+      exitCode: null,
+      logPath,
+    };
+    ops.set(id, entry);
+
+    const run = (args, label, cwd) =>
+      new Promise((resolve) => {
+        append(`\n===== ${label}（${args.join(" ")}）=====\n`);
+        const child = spawn(args[0], args.slice(1), {
+          cwd: cwd ?? undefined,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child.stdout.on("data", (d) => append(d.toString()));
+        child.stderr.on("data", (d) => append(d.toString()));
+        child.on("close", (code) => {
+          append(`\n[${label}] exit code: ${code}\n`);
+          resolve(code);
+        });
+        child.on("error", (err) => {
+          append(`\n[${label}] spawn error: ${err.message}\n`);
+          entry.error = err.message;
+          resolve(-1);
+        });
+      });
+
+    void (async () => {
+      try {
+        // 0) 已有源码？直接返回，不下载
+        const existing = detectRepoRoot({ bhCommand, gitRepo });
+        if (existing) {
+          append(`\n[bootstrap] 检测到已有百花源码：${existing}\n`);
+          entry.exitCode = 0;
+          entry.result = { ok: true, cloned: false, root: existing };
+          return;
+        }
+
+        // 1) 目标目录：target 展开 ~，默认 ~/src/baihua
+        const home = homedir();
+        const rawTarget = o.target || join(home, "src", "baihua");
+        const target = rawTarget.replace(/^~(?=$|\/|\\)/, home);
+        const url = o.url || "https://github.com/luminsw/baihua.git";
+        const depth = Number(o.depth) > 0 ? Number(o.depth) : 1;
+
+        if (existsSync(join(target, ".git"))) {
+          append(`\n[bootstrap] 目标目录已有 .git：${target}（视为已安装）\n`);
+          entry.exitCode = 0;
+          entry.result = { ok: true, cloned: false, root: target };
+          return;
+        }
+        mkdirSync(dirname(target), { recursive: true });
+
+        // 2) git clone（浅克隆）
+        const cloneArgs = ["git", "clone", "--depth", String(depth), url, target];
+        const cloneCode = await run(cloneArgs, "git clone");
+        if (cloneCode !== 0) {
+          entry.exitCode = cloneCode;
+          entry.result = { ok: false, error: `git clone 失败（exit ${cloneCode}），见上方输出` };
+          return;
+        }
+
+        // 3) 自动安装 bh 定位器（把 PATH 入口装好）
+        const bhSh = join(target, "tools", "bh", "bh.sh");
+        if (existsSync(bhSh)) {
+          const installCode = await run(
+            process.platform === "win32" ? ["pwsh", "-NoProfile", "-File", bhSh.replace(/\.sh$/, ".ps1"), "install"] : ["bash", bhSh, "install"],
+            "bh install",
+            target,
+          );
+          if (installCode !== 0) {
+            entry.exitCode = installCode;
+            entry.result = { ok: false, error: `源码已下载到 ${target}，但 bh install 失败（exit ${installCode}）` };
+            return;
+          }
+        }
+
+        entry.exitCode = 0;
+        entry.result = { ok: true, cloned: true, root: target, url, depth };
+        append(`\n[bootstrap] 完成 ✅ 源码位于 ${target}，bh 已装好，可直接使用。\n`);
+      } catch (e) {
+        entry.exitCode = 1;
+        entry.error = e.message;
+        entry.result = { ok: false, error: e.message };
+      } finally {
+        entry.running = false;
+        append(`\n[bootstrap] ${entry.exitCode === 0 ? "完成 ✅" : "失败（exit " + entry.exitCode + "）"}。\n`);
+      }
+    })();
+
+    return entry;
+  }
+
+  return {
+    status,
+    action,
+    startLongAction,
+    listOps,
+    opStatus,
+    logs,
+    restartDsh,
+    startGitCommitPush,
+    startBootstrap,
+  };
 }
