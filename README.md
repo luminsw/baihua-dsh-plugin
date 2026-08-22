@@ -109,8 +109,8 @@ cd "$HOME\.dsh\profiles\web"
 dsh plugin --profile web add github:luminsw/baihua-dsh-plugin
 ```
 
-> 也可从本地路径安装：`dsh plugin --profile web add link:C:\Users\lumin\source\repos\baihua-dsh-plugin`
-> 或用 pnpm 直接：`pnpm add file:C:\Users\lumin\source\repos\baihua-dsh-plugin`。
+> 也可从本地路径安装：`dsh plugin --profile web add link:C:\Users\lumin\src\baihua-dsh-plugin`
+> 或用 pnpm 直接：`pnpm add file:C:\Users\lumin\src\baihua-dsh-plugin`。
 
 > ⚠️ 从 git 安装会拉取源码并运行包的 `prepare` 脚本；pnpm ≥ 10 首次需要显式授权
 > （`dsh plugin` 会提示把包键加入该 profile 的 `pnpm-workspace.yaml` 的
