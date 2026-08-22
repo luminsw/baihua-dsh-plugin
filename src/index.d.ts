@@ -19,6 +19,8 @@ export interface BridgeConfig {
   vaultUrl?: string;
   /** 百花 Family 服务地址（家庭数据）。 */
   familyUrl?: string;
+  /** 百花 WebUI 服务地址（“打开百花”入口自动登录用）。 */
+  webUrl?: string;
   /** ComfyUI 服务地址（出图工具）。 */
   comfyUrl?: string;
   /** ComfyUI 默认 checkpoint。 */

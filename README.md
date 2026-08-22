@@ -18,6 +18,7 @@
 | POST | `/dsh-bridge/bh/action` | body `{ action, service? }` — `start/stop/restart <svc>`（快速）或 `build [svc]/update/up/deploy`（后台，返回 `opId`） |
 | GET  | `/dsh-bridge/bh/ops` / `/dsh-bridge/bh/ops/{opId}` | 长操作列表 / 单个操作进度与最近输出 |
 | GET  | `/dsh-bridge/bh/logs?service=&lines=` | 查看指定服务最近日志 |
+| GET  | `/dsh-bridge/baihua/open-url` | 向百花 WebUI 申请一次性 cli-token 并返回自动登录首页的 URL（供 DSH 设置页卡片「打开百花」入口调用，同源免 token、仅回环 webServer） |
 
 > 除 `/status` 外的所有接口受 `token` 配置保护（见下文「安全」）。`/dsh-bridge/bh/*`
 > 还会注册同名 DSH 工具（`bh_status` / `bh_start` / `bh_stop` / `bh_restart` /

@@ -64,6 +64,8 @@ export const Config = z.object({
   vaultUrl: z.string().default("http://127.0.0.1:8790"),
   /** 百花 Family 服务地址（家庭数据；默认本机回环，k8s 部署填 ClusterIP）。 */
   familyUrl: z.string().default("http://127.0.0.1:8788"),
+  /** 百花 WebUI 服务地址（“打开百花”入口自动登录用；默认本机回环，k8s 部署填对外地址）。 */
+  webUrl: z.string().default("http://127.0.0.1:5177"),
   /** ComfyUI 服务地址（出图工具；默认本机回环）。 */
   comfyUrl: z.string().default("http://127.0.0.1:8188"),
   /** ComfyUI 默认 checkpoint（ckpt_name，如 model.safetensors）。 */
@@ -701,6 +703,36 @@ export function apply(ctx, config) {
     });
   }
 
+  /**
+   * “打开百花”入口（GET /dsh-bridge/baihua/open-url）：向百花 WebUI 申请一次性
+   * cli-token，返回可自动登录并直达首页的 URL。供 DSH 设置页客户端卡片调用；
+   * 同源免 token（与 ui-action 相同策略），仅注册在回环 webServer、不暴露到 lanListen。
+   */
+  function handleOpenBaihua(req, res) {
+    if (req.method !== "GET") return sendJson(res, 405, { ok: false, error: "method not allowed" });
+    if (!sameOriginRequest(req)) return sendJson(res, 403, { ok: false, error: "仅允许 DSH 页面同源调用" });
+    const base = String(config.webUrl || "http://127.0.0.1:5177").trim().replace(/\/+$/, "");
+    if (!base) return sendJson(res, 400, { ok: false, error: "webUrl 未配置" });
+    void (async () => {
+      try {
+        const resp = await fetch(base + "/api/auth/cli-token", {
+          method: "POST",
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          return sendJson(res, 502, { ok: false, error: "百花 WebUI 返回 HTTP " + resp.status + (text ? "：" + text.slice(0, 120) : "") });
+        }
+        const data = await resp.json().catch(() => null);
+        const token = data?.token;
+        if (!token) return sendJson(res, 502, { ok: false, error: "cli-token 响应缺少 token" });
+        sendJson(res, 200, { ok: true, url: base + "/?cli-token=" + encodeURIComponent(token) });
+      } catch (e) {
+        sendJson(res, 502, { ok: false, error: "获取 cli-token 失败：" + (e instanceof Error ? e.message : String(e)) });
+      }
+    })();
+  }
+
   function handleBh(req, res) {
     if (!authorized(req)) return unauthorized(res);
     if (!bhOps) return sendJson(res, 503, { ok: false, error: "bh 运维未启用（未配置 bhCommand）" });
@@ -975,6 +1007,9 @@ export function apply(ctx, config) {
     if (disposeUiAction) disposers.push(disposeUiAction);
     const disposeUpgrade = webServer?.registerUpgrade({ path: "/dsh-bridge/stream", handler: handleWsUpgrade });
     if (disposeUpgrade) disposers.push(disposeUpgrade);
+    // 「打开百花」入口（同源免 token，仅本机 webServer；LAN 走 /dsh-bridge 前缀会被 token 拦截）
+    const disposeOpenBaihua = webServer?.register({ kind: "exact", path: "/dsh-bridge/baihua/open-url", handler: handleOpenBaihua });
+    if (disposeOpenBaihua) disposers.push(disposeOpenBaihua);
 
     // 可选局域网监听：只暴露 /dsh-bridge/*（token 鉴权），其余路径一律 404
     let lanServer = null;

@@ -18,6 +18,20 @@ window.__ModuleLoader__.load({
 
     const STATUS_URL = "/dsh-bridge/bh/status-ui";
     const ACTION_URL = "/dsh-bridge/bh/ui-action";
+    const OPEN_URL = "/dsh-bridge/baihua/open-url";
+
+    // “打开百花”：向 host 申请 cli-token，再打开百花 WebUI 首页（自动登录）
+    const openBaihua = async (setMsg) => {
+      try {
+        const res = await fetch(OPEN_URL, { cache: "no-store" });
+        const j = await res.json().catch(() => null);
+        if (!j || !j.ok) throw new Error((j && j.error) || "HTTP " + res.status);
+        window.open(j.url, "_blank", "noopener,noreferrer");
+        setMsg({ ok: true, text: "已打开百花 WebUI（自动登录）" });
+      } catch (e) {
+        setMsg({ ok: false, text: "打开百花失败：" + (e instanceof Error ? e.message : String(e)) });
+      }
+    };
 
     // 长操作（后台执行，返回 opId）
     const LONG_ACTIONS = ["build", "build-restart", "update", "up", "deploy"];
@@ -163,6 +177,16 @@ window.__ModuleLoader__.load({
               title: "提交并推送百花仓库（git add -A + commit + push）",
             },
             "⬆️提交推送"
+          ),
+          React.createElement(
+            "button",
+            {
+              style: btn,
+              disabled: busy,
+              onClick: () => openBaihua(setMsg),
+              title: "获取百花 cli-token 并打开 WebUI 首页（自动登录）",
+            },
+            "🌐打开百花"
           )
         ),
         err
