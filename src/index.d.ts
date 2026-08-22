@@ -25,6 +25,10 @@ export interface BridgeConfig {
   comfyUrl?: string;
   /** ComfyUI 默认 checkpoint。 */
   comfyCheckpoint?: string;
+  /** 百花算力池绘图网关（/mg/pool/v1/draw/* 所在 Family）。空 = 用 familyUrl。跨机时可指向任一百花节点。 */
+  drawGatewayUrl?: string;
+  /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
+  drawToken?: string;
 }
 
 /** 插件名（Cordis 约定）。 */

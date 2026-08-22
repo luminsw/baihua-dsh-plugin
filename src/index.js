@@ -70,6 +70,10 @@ export const Config = z.object({
   comfyUrl: z.string().default("http://127.0.0.1:8188"),
   /** ComfyUI 默认 checkpoint（ckpt_name，如 model.safetensors）。 */
   comfyCheckpoint: z.string().default("model.safetensors"),
+  /** 百花算力池绘图网关（/mg/pool/v1/draw/* 所在 Family）。空 = 用 familyUrl。跨机时可指向任一百花节点。 */
+  drawGatewayUrl: z.string().default(""),
+  /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
+  drawToken: z.string().default(""),
 });
 
 /** 从第一条用户消息抽取会话标题候选。 */
@@ -586,13 +590,13 @@ export function apply(ctx, config) {
   };
   registerBaihuaTools();
 
-  // ---------- ComfyUI 出图工具 ----------
+  // ---------- 百花绘图工具（经算力池绘图网关，支持跨机） ----------
   const comfy = createComfyClient(config);
   ctx.tools.register(
     defineTool({
       name: "baihua_draw",
       description:
-        "用本机 ComfyUI 生成 AI 图片（txt2img）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向，width/height 默认 512（支持 512/768/1024），steps 默认 20。返回图片访问 URL（可用 web 工具打开查看）。ComfyUI 未运行时返回明确错误。",
+        "调用百花绘图网关生成 AI 图片（txt2img，SD）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向，width/height 默认 512，steps 默认 20。返回图片访问 URL（可用 web 工具打开查看）。支持跨机：drawGatewayUrl 指向任一百花节点。",
       parameters: {
         prompt: { type: "string", required: true, description: "正向提示词（英文效果更佳）" },
         negativePrompt: { type: "string", description: "负向提示词" },
@@ -612,6 +616,39 @@ export function apply(ctx, config) {
         if (!r.ok) return `❌ ${r.error}`;
         return (
           `✅ 已生成 ${r.images.length} 张图（${r.elapsedMs / 1000}s）：\n` +
+          r.images.map((i) => `${i.url}`).join("\n")
+        );
+      },
+    }),
+  );
+  ctx.tools.register(
+    defineTool({
+      name: "baihua_draw_video",
+      description:
+        "调用百花绘图网关生成 AI 视频（txt2video，LTX Video）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向，width/height 建议 ≤768，length 帧数（默认 97，约 4 秒），fps 默认 25，steps 默认 20。生成约 1-5 分钟，返回视频访问 URL。支持跨机：drawGatewayUrl 指向任一百花节点。",
+      parameters: {
+        prompt: { type: "string", required: true, description: "正向提示词（英文效果更佳）" },
+        negativePrompt: { type: "string", description: "负向提示词" },
+        width: { type: "integer", description: "宽（默认 512，建议 ≤768）" },
+        height: { type: "integer", description: "高（默认 512，建议 ≤768）" },
+        length: { type: "integer", description: "帧数（默认 97，约 4 秒；25-121）" },
+        fps: { type: "integer", description: "帧率（默认 25）" },
+        steps: { type: "integer", description: "采样步数（默认 20）" },
+      },
+      output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+      async execute(args) {
+        const r = await comfy.generateVideo({
+          prompt: String(args.prompt),
+          negativePrompt: String(args.negativePrompt ?? ""),
+          width: Number(args.width) || 512,
+          height: Number(args.height) || 512,
+          length: Number(args.length) || 97,
+          fps: Number(args.fps) || 25,
+          steps: Number(args.steps) || 20,
+        });
+        if (!r.ok) return `❌ ${r.error}`;
+        return (
+          `✅ 已生成视频（${r.elapsedMs / 1000}s）：\n` +
           r.images.map((i) => `${i.url}`).join("\n")
         );
       },
