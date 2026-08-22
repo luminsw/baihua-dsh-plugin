@@ -5,6 +5,27 @@
 让百花 Web 页面作为客户端驱动 DSH 的 agent 会话，并实时接收执行事件流
 （流式 token、工具调用时间线、回合边界）。
 
+## 关于百花（Baihua）
+
+[百花](https://github.com/luminsw/baihua) 是一个面向本地/局域网的家庭服务端：
+
+- **知识库**：笔记管理、全文/语义搜索、Anki 记忆卡片、AI 生成笔记
+- **家庭数据**：记账、任务/待办、学习打卡、成就/排行榜、家庭病历本（AI 诊断）
+- **AI 能力**：本机 OpenVINO（OVMS）推理 + 云端模型路由（OpenAI 兼容 shim）+ 算力池互联
+- **运维**：`bh` CLI（status/start/stop/build/update，Windows native 与 Linux docker·k8s）
+
+服务组成：`Baihua.Family`(8788) · `Baihua.AI`(8791) · `Baihua.Vault`(8790) · `Baihua.Web`(5177)。
+
+**定位：百花 = 能力提供方（算力池 / 本机模型 / 知识库 / 家庭数据），DSH（DeepSeek Harness）= 编排与交互面。** 本插件是这套生态里「百花 Web → DSH」的桥：百花页面把 AI 对话等消费型交互交给 DSH 智能体执行，同时把百花服务运维（`bh_*`）与数据（知识库/记账/任务）反哺给 DSH 的 agent。
+
+同族插件（org `luminsw`，均已公开）：
+
+- [`baihua-local-ai-dsh-plugin`](https://github.com/luminsw/baihua-local-ai-dsh-plugin) — DSH → 百花本地 AI（探测 OVMS/shim，注册 `baihua-local` provider，`local_ai_small_task` 省线上 token）
+- [`baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server) — 百花 → 任意 MCP 客户端（标准 MCP 只读能力）
+- [`hysteria-dsh-plugin`](https://github.com/luminsw/hysteria-dsh-plugin) — 本机 Hysteria 2 代理管理（开发网络兜底）
+
+部署与配置总文档见百花仓库 [`docs/DSH_INTEGRATION.md`](https://github.com/luminsw/baihua/blob/main/docs/DSH_INTEGRATION.md)。
+
 ## 暴露的接口
 
 | 方法 | 路径 | 说明 |
