@@ -165,7 +165,9 @@ export function createBhOps(config) {
       exitCode: null,
       logPath,
     };
-    const child = spawn(bhCommand, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // Windows 上 bh 是 .cmd/.ps1，须经 cmd.exe 包装（bare 名 spawn 会 ENOENT/EINVAL，导致长操作一启动就失败）
+    const [cmd, argv] = bhArgv(args);
+    const child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (d) => append(d.toString()));
     child.stderr.on("data", (d) => append(d.toString()));
     child.on("close", (code) => {
