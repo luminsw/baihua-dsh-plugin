@@ -51,13 +51,13 @@ export const Config = z.object({
   /**
    * 百花服务运维（bh CLI）入口。留空（""）则禁用运维端点与工具；
    * 默认 "bh"（宿主机 PATH 中），也可填绝对路径如
-   * "/home/lumin/src/mdyj/baihua/tools/bh/bh.sh"。注意：这些操作会
+   * "~/src/baihua/tools/bh/bh.sh"。注意：这些操作会
    * 以宿主机用户权限执行启停/编译/更新，必须配合 token 鉴权。
    */
   bhCommand: z.string().default("bh"),
   /**
    * git 提交/推送操作的仓库根（默认按 bhCommand 所在路径推断百花仓库根；
-   * 也可显式配置，如 "/home/lumin/src/mdyj/baihua"）。
+   * 也可显式配置，如 "~/src/baihua"）。
    */
   gitRepo: z.string().default(""),
   /** 百花 Vault 服务地址（知识库检索/笔记；默认本机回环，k8s 部署填 ClusterIP）。 */
