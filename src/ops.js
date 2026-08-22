@@ -107,9 +107,24 @@ export function createBhOps(config) {
   const ops = new Map();
   let seq = 0;
 
+  // Windows：bh 是 .cmd/.ps1，Node 无法直接 spawn（bare 名 ENOENT、.cmd EINVAL），
+  // 统一经 cmd.exe /d /s /c 包装（Linux/macOS 直接 spawn）。
+  const winCmd = process.platform === "win32" ? process.env.ComSpec || "cmd.exe" : null;
+  function bhArgv(args) {
+    if (!winCmd) return [bhCommand, args];
+    const line = [bhCommand, ...args]
+      .map((a) => {
+        const s = String(a);
+        return /[\s"]/.test(s) && !/^".*"$/.test(s) ? '"' + s.replace(/"/g, '\\"') + '"' : s;
+      })
+      .join(" ");
+    return [winCmd, ["/d", "/s", "/c", line]];
+  }
+
   function runQuick(args, timeoutMs = QUICK_TIMEOUT_MS) {
     try {
-      const r = spawnSync(bhCommand, args, {
+      const [cmd, argv] = bhArgv(args);
+      const r = spawnSync(cmd, argv, {
         encoding: "utf8",
         timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
@@ -255,7 +270,8 @@ export function createBhOps(config) {
     const run = (args, label) =>
       new Promise((resolve) => {
         append(`\n===== ${label}（bh ${args.join(" ")}）=====\n`);
-        const child = spawn(bhCommand, args, { stdio: ["ignore", "pipe", "pipe"] });
+        const [cmd, argv] = bhArgv(args);
+        const child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.on("data", (d) => append(d.toString()));
         child.stderr.on("data", (d) => append(d.toString()));
         child.on("close", (code) => {
