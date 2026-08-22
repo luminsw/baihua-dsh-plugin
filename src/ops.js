@@ -147,15 +147,6 @@ export function createBhOps(config) {
     const logPath = `/tmp/bh-${id}.log`;
     const args = [action];
     if (service) args.push(service);
-    let tail = "";
-    const append = (s) => {
-      tail = (tail + s).slice(-MAX_TAIL);
-      try {
-        appendFileSync(logPath, s);
-      } catch {
-        /* noop */
-      }
-    };
     const entry = {
       id,
       action,
@@ -164,18 +155,40 @@ export function createBhOps(config) {
       running: true,
       exitCode: null,
       logPath,
+      tail: "",
+    };
+    const append = (s) => {
+      entry.tail = (entry.tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
     };
     // Windows 上 bh 是 .cmd/.ps1，须经 cmd.exe 包装（bare 名 spawn 会 ENOENT/EINVAL，导致长操作一启动就失败）
     const [cmd, argv] = bhArgv(args);
     const child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (d) => append(d.toString()));
     child.stderr.on("data", (d) => append(d.toString()));
-    child.on("close", (code) => {
+    // 用 exit 而非 close 收尾：bh 启动的服务进程会继承 stdout 管道句柄，
+    // close 要等管道彻底关闭（服务存活期间永不触发），导致 op 一直显示“运行中”。
+    const finalize = (code) => {
+      if (entry.finalized) return;
+      entry.finalized = true;
       entry.running = false;
       entry.exitCode = code;
       append(`\n[op] exit code: ${code}\n`);
-    });
+      try {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      } catch {
+        /* noop */
+      }
+    };
+    child.on("exit", finalize);
+    child.on("close", finalize); // 幂等兜底（正常关闭路径）
     child.on("error", (err) => {
+      entry.finalized = true;
       entry.running = false;
       entry.error = err.message;
       append(`\n[op] spawn error: ${err.message}\n`);
@@ -249,15 +262,6 @@ export function createBhOps(config) {
   function startBuildRestart(service) {
     const id = `op-${Date.now()}-${++seq}`;
     const logPath = `/tmp/bh-${id}.log`;
-    let tail = "";
-    const append = (s) => {
-      tail = (tail + s).slice(-MAX_TAIL);
-      try {
-        appendFileSync(logPath, s);
-      } catch {
-        /* noop */
-      }
-    };
     const entry = {
       id,
       action: "build-restart",
@@ -266,6 +270,15 @@ export function createBhOps(config) {
       running: true,
       exitCode: null,
       logPath,
+      tail: "",
+    };
+    const append = (s) => {
+      entry.tail = (entry.tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
     };
     ops.set(id, entry);
 
@@ -276,10 +289,19 @@ export function createBhOps(config) {
         const child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.on("data", (d) => append(d.toString()));
         child.stderr.on("data", (d) => append(d.toString()));
-        child.on("close", (code) => {
+        // exit 收尾：bh restart 也会拉起服务进程（继承管道句柄），close 永不触发
+        const settle = (code) => {
           append(`\n[${label}] exit code: ${code}\n`);
+          try {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          } catch {
+            /* noop */
+          }
           resolve(code);
-        });
+        };
+        child.on("exit", settle);
+        child.on("close", settle); // 幂等兜底
         child.on("error", (err) => {
           append(`\n[${label}] spawn error: ${err.message}\n`);
           entry.error = err.message;
@@ -391,15 +413,6 @@ export function createBhOps(config) {
   function startGitCommitPush(message) {
     const id = `op-${Date.now()}-${++seq}`;
     const logPath = `/tmp/bh-${id}.log`;
-    let tail = "";
-    const append = (s) => {
-      tail = (tail + s).slice(-MAX_TAIL);
-      try {
-        appendFileSync(logPath, s);
-      } catch {
-        /* noop */
-      }
-    };
     const entry = {
       id,
       action: "git-commit-push",
@@ -408,6 +421,15 @@ export function createBhOps(config) {
       running: true,
       exitCode: null,
       logPath,
+      tail: "",
+    };
+    const append = (s) => {
+      entry.tail = (entry.tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
     };
     ops.set(id, entry);
 
@@ -420,10 +442,18 @@ export function createBhOps(config) {
         });
         child.stdout.on("data", (d) => append(d.toString()));
         child.stderr.on("data", (d) => append(d.toString()));
-        child.on("close", (code) => {
+        const settle = (code) => {
           append(`\n[${label}] exit code: ${code}\n`);
+          try {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          } catch {
+            /* noop */
+          }
           resolve(code);
-        });
+        };
+        child.on("exit", settle);
+        child.on("close", settle); // 幂等兜底
         child.on("error", (err) => {
           append(`\n[${label}] spawn error: ${err.message}\n`);
           entry.error = err.message;
@@ -446,10 +476,18 @@ export function createBhOps(config) {
               const child = spawn("cmd", ["/c", cmd], { cwd: gitRepo, stdio: ["ignore", "pipe", "pipe"] });
               child.stdout.on("data", (d) => append(d.toString()));
               child.stderr.on("data", (d) => append(d.toString()));
-              child.on("close", (c) => {
+              const settle = (c) => {
                 append(`\n[${cmd}] exit code: ${c}\n`);
+                try {
+                  child.stdout?.destroy();
+                  child.stderr?.destroy();
+                } catch {
+                  /* noop */
+                }
                 resolve(c);
-              });
+              };
+              child.on("exit", settle);
+              child.on("close", settle); // 幂等兜底
               child.on("error", (err) => {
                 append(`\n[${cmd}] spawn error: ${err.message}\n`);
                 resolve(-1);
@@ -496,15 +534,6 @@ export function createBhOps(config) {
   function startBootstrap(o = {}) {
     const id = `op-${Date.now()}-${++seq}`;
     const logPath = `/tmp/bh-${id}.log`;
-    let tail = "";
-    const append = (s) => {
-      tail = (tail + s).slice(-MAX_TAIL);
-      try {
-        appendFileSync(logPath, s);
-      } catch {
-        /* noop */
-      }
-    };
     const entry = {
       id,
       action: "bootstrap",
@@ -513,6 +542,15 @@ export function createBhOps(config) {
       running: true,
       exitCode: null,
       logPath,
+      tail: "",
+    };
+    const append = (s) => {
+      entry.tail = (entry.tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
     };
     ops.set(id, entry);
 
@@ -525,10 +563,18 @@ export function createBhOps(config) {
         });
         child.stdout.on("data", (d) => append(d.toString()));
         child.stderr.on("data", (d) => append(d.toString()));
-        child.on("close", (code) => {
+        const settle = (code) => {
           append(`\n[${label}] exit code: ${code}\n`);
+          try {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          } catch {
+            /* noop */
+          }
           resolve(code);
-        });
+        };
+        child.on("exit", settle);
+        child.on("close", settle); // 幂等兜底
         child.on("error", (err) => {
           append(`\n[${label}] spawn error: ${err.message}\n`);
           entry.error = err.message;
