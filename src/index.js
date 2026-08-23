@@ -68,8 +68,9 @@ export const Config = z.object({
   webUrl: z.string().default("http://127.0.0.1:5177"),
   /** ComfyUI 服务地址（出图工具；默认本机回环）。 */
   comfyUrl: z.string().default("http://127.0.0.1:8188"),
-  /** ComfyUI 默认 checkpoint（ckpt_name，如 model.safetensors）。 */
-  comfyCheckpoint: z.string().default("model.safetensors"),
+  /** ComfyUI 出图模型类型：z-image-turbo（默认）或 sd15。 */
+  comfyModelType: z.string().default("z-image-turbo"),
+  comfyCheckpoint: z.string().default("v1-5-pruned-emaonly.safetensors"),
   /** 百花算力池绘图网关（/mg/pool/v1/draw/* 所在 Family）。空 = 用 familyUrl。跨机时可指向任一百花节点。 */
   drawGatewayUrl: z.string().default(""),
   /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
@@ -596,26 +597,30 @@ export function apply(ctx, config) {
     defineTool({
       name: "baihua_draw",
       description:
-        "调用百花绘图网关生成 AI 图片（txt2img，SD）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向，width/height 默认 512，steps 默认 20。返回图片访问 URL（可用 web 工具打开查看）。支持跨机：drawGatewayUrl 指向任一百花节点。",
+        "调用百花绘图网关生成 AI 图片（txt2img）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向；modelType 默认 z-image-turbo（Z-Image Turbo，1024 原生、8 步），也可选 sd15（SD1.5，512 原生、20 步）；width/height/steps 默认按模型类型选取。返回图片访问 URL（可用 web 工具打开查看）。支持跨机：drawGatewayUrl 指向任一百花节点。",
       parameters: {
         prompt: { type: "string", required: true, description: "正向提示词（英文效果更佳）" },
         negativePrompt: { type: "string", description: "负向提示词" },
-        width: { type: "integer", description: "宽（默认 512）" },
-        height: { type: "integer", description: "高（默认 512）" },
-        steps: { type: "integer", description: "采样步数（默认 20）" },
+        modelType: { type: "string", description: "模型类型：z-image-turbo（默认）或 sd15" },
+        checkpoint: { type: "string", description: "SD1.5 checkpoint 名（modelType=sd15 时生效；默认 v1-5-pruned-emaonly.safetensors）" },
+        width: { type: "integer", description: "宽（默认按模型：turbo 1024 / sd15 512）" },
+        height: { type: "integer", description: "高（默认按模型：turbo 1024 / sd15 512）" },
+        steps: { type: "integer", description: "采样步数（默认按模型：turbo 8 / sd15 20）" },
       },
       output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
       async execute(args) {
         const r = await comfy.generate({
           prompt: String(args.prompt),
           negativePrompt: String(args.negativePrompt ?? ""),
-          width: Number(args.width) || 512,
-          height: Number(args.height) || 512,
-          steps: Number(args.steps) || 20,
+          width: Number(args.width) || undefined,
+          height: Number(args.height) || undefined,
+          steps: Number(args.steps) || undefined,
+          modelType: args.modelType ? String(args.modelType) : undefined,
+          checkpoint: args.checkpoint ? String(args.checkpoint) : undefined,
         });
         if (!r.ok) return `❌ ${r.error}`;
         return (
-          `✅ 已生成 ${r.images.length} 张图（${r.elapsedMs / 1000}s）：\n` +
+          `✅ 已生成 ${r.images.length} 张图（${r.elapsedMs / 1000}s，模型 ${r.modelType}，${r.width}×${r.height}，${r.steps} 步）：\n` +
           r.images.map((i) => `${i.url}`).join("\n")
         );
       },

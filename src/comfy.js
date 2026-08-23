@@ -20,6 +20,7 @@ export function createComfyClient(config) {
   const gatewayUrl = (config.drawGatewayUrl || config.familyUrl || "http://127.0.0.1:8788")
     .trim().replace(/\/+$/, "");
   const token = config.drawToken || "";
+  const defaultModelType = normalizeModelType(config.comfyModelType || "z-image-turbo");
 
   /** 绘图能力查询（ComfyUI 在线 + 支持图像/视频）。 */
   async function status(timeoutMs = 6000) {
@@ -40,16 +41,23 @@ export function createComfyClient(config) {
   }
 
   /** 文生图。经网关提交并等待完成，返回输出文件访问 URL。 */
-  async function generate({ prompt, negativePrompt = "", width = 512, height = 512, steps = 20, checkpoint, timeoutMs = 300000 }) {
+  async function generate({ prompt, negativePrompt = "", width, height, steps, checkpoint, modelType, timeoutMs = 300000 }) {
+    const mt = normalizeModelType(modelType || defaultModelType);
+    const isTurbo = mt === "z-image-turbo";
+    const w = clampInt(width || (isTurbo ? 1024 : 512), 256, 1024);
+    const h = clampInt(height || (isTurbo ? 1024 : 512), 256, 1024);
+    const st = clampInt(steps || (isTurbo ? 8 : 20), 1, 100);
     const body = {
       prompt,
       negativePrompt: negativePrompt || undefined,
-      width: clampInt(width, 256, 1024),
-      height: clampInt(height, 256, 1024),
-      steps: clampInt(steps, 1, 100),
+      width: w,
+      height: h,
+      steps: st,
+      modelType: mt,
       ...(checkpoint ? { checkpoint } : {}),
     };
-    return await callGateway("/mg/pool/v1/draw/image", body, timeoutMs);
+    const r = await callGateway("/mg/pool/v1/draw/image", body, timeoutMs);
+    return r.ok ? { ...r, modelType: mt, width: w, height: h, steps: st } : r;
   }
 
   /** 文生视频（LTX）。经网关提交并等待完成，返回输出文件访问 URL。 */
@@ -81,7 +89,7 @@ export function createComfyClient(config) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: `绘图网关失败（HTTP ${res.status}）：${JSON.stringify(data).slice(0, 300)}` };
     if (!data.Success) return { ok: false, error: data.Error || "生成失败", elapsedMs: (data.ElapsedSeconds ?? 0) * 1000 };
-    const url = `${gatewayUrl}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
+    const url = data.FileUrl || `${gatewayUrl}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
     return {
       ok: true,
       images: [{ url, filename: data.FileName }],
@@ -97,4 +105,11 @@ function clampInt(v, min, max) {
   const n = Number(v);
   if (!Number.isFinite(n)) return min;
   return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+function normalizeModelType(v) {
+  const s = String(v || "").trim().toLowerCase();
+  return ["z-image-turbo", "zimage-turbo", "z_image_turbo", "z-image", "zimage"].includes(s)
+    ? "z-image-turbo"
+    : "sd15";
 }
