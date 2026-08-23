@@ -217,6 +217,9 @@ window.__ModuleLoader__.load({
       const headBadge = git && git.head !== "unknown"
         ? " · " + git.head + (git.dirty ? " ⚠️未提交" : "")
         : "";
+      // advancedToggle / saveButtons 是 eager 创建（构造时即求值），snap 可能为 null
+      // （首帧或 settingsScope 未绑定），因此不能直接访问 snap.writable/snap.status。
+      const writable = snap ? snap.writable !== false : false;
 
       // 单个配置字段节点（文本/密码）
       const fieldNode = (f) => {
@@ -230,7 +233,7 @@ window.__ModuleLoader__.load({
             type: f.type === "password" ? "password" : "text",
             value: val === undefined ? "" : String(val),
             placeholder: f.type === "password" ? "留空保持现状" : undefined,
-            disabled: !(snap.writable !== false) || saving,
+            disabled: !writable || saving,
             onChange: (e) => setField(f.key, e.target.value),
           }),
           React.createElement("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)", lineHeight: 1.5 } }, f.hint)
@@ -246,7 +249,7 @@ window.__ModuleLoader__.load({
           "aria-expanded": showAdvanced,
           onClick: () => setShowAdvanced(!showAdvanced),
         },
-        React.createElement("span", { style: { flex: 1, minWidth: 0 } }, "高级设置（" + BAIHUA_FIELDS.length + " 项）" + (snap.status === "unavailable" ? " · 当前不可编辑" : "")),
+        React.createElement("span", { style: { flex: 1, minWidth: 0 } }, "高级设置（" + BAIHUA_FIELDS.length + " 项）" + (snap && snap.status === "unavailable" ? " · 当前不可编辑" : "")),
         React.createElement("svg", { width: 14, height: 14, viewBox: "0 0 14 14", fill: "none", style: { color: "var(--dsw-alias-label-tertiary)", flex: "none", transition: "transform .16s", transform: showAdvanced ? "rotate(180deg)" : "none" } },
           React.createElement("path", { d: "M3 5.5L7 9.5L11 5.5", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" })
         )
@@ -254,8 +257,8 @@ window.__ModuleLoader__.load({
       const saveButtons = React.createElement(
         "div",
         { style: { display: "flex", gap: 8, marginTop: 4, alignItems: "center" } },
-        React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: discard }, "放弃修改"),
-        React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid transparent", background: "var(--dsw-alias-label-primary)", color: "var(--dsw-alias-bg-layer-3)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: save }, saving ? "保存中…" : "保存"),
+        React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || !writable, onClick: discard }, "放弃修改"),
+        React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid transparent", background: "var(--dsw-alias-label-primary)", color: "var(--dsw-alias-bg-layer-3)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || !writable, onClick: save }, saving ? "保存中…" : "保存"),
         saveMsg ? React.createElement("span", { style: { fontSize: 12, color: saveMsg.ok ? "#2e7d32" : "#c0392b" } }, saveMsg.text) : null
       );
 
