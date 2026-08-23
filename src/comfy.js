@@ -41,7 +41,23 @@ export function createComfyClient(config) {
   }
 
   /** 文生图。经网关提交并等待完成，返回输出文件访问 URL。 */
-  async function generate({ prompt, negativePrompt = "", width, height, steps, checkpoint, modelType, timeoutMs = 300000 }) {
+  async function generate({
+    prompt,
+    negativePrompt = "",
+    width,
+    height,
+    steps,
+    seed,
+    cfg,
+    sampler,
+    scheduler,
+    checkpoint,
+    unetName,
+    clipName,
+    vaeName,
+    modelType,
+    timeoutMs = 300000,
+  }) {
     const mt = normalizeModelType(modelType || defaultModelType);
     const isTurbo = mt === "z-image-turbo";
     const w = clampInt(width || (isTurbo ? 1024 : 512), 256, 1024);
@@ -54,14 +70,35 @@ export function createComfyClient(config) {
       height: h,
       steps: st,
       modelType: mt,
+      ...(seed != null ? { seed } : {}),
+      ...(cfg != null ? { cfg } : {}),
+      ...(sampler ? { sampler } : {}),
+      ...(scheduler ? { scheduler } : {}),
       ...(checkpoint ? { checkpoint } : {}),
+      ...(unetName ? { unetName } : {}),
+      ...(clipName ? { clipName } : {}),
+      ...(vaeName ? { vaeName } : {}),
     };
     const r = await callGateway("/mg/pool/v1/draw/image", body, timeoutMs);
     return r.ok ? { ...r, modelType: mt, width: w, height: h, steps: st } : r;
   }
 
   /** 文生视频（LTX）。经网关提交并等待完成，返回输出文件访问 URL。 */
-  async function generateVideo({ prompt, negativePrompt = "", width = 512, height = 512, length = 97, fps = 25, steps = 20, checkpoint, timeoutMs = 360000 }) {
+  async function generateVideo({
+    prompt,
+    negativePrompt = "",
+    width = 512,
+    height = 512,
+    length = 97,
+    fps = 25,
+    steps = 20,
+    seed,
+    cfg,
+    sampler,
+    scheduler,
+    checkpoint,
+    timeoutMs = 360000,
+  }) {
     const body = {
       prompt,
       negativePrompt: negativePrompt || undefined,
@@ -70,6 +107,10 @@ export function createComfyClient(config) {
       length: clampInt(length, 25, 121),
       fps: clampInt(fps, 1, 60),
       steps: clampInt(steps, 1, 100),
+      ...(seed != null ? { seed } : {}),
+      ...(cfg != null ? { cfg } : {}),
+      ...(sampler ? { sampler } : {}),
+      ...(scheduler ? { scheduler } : {}),
       ...(checkpoint ? { checkpoint } : {}),
     };
     return await callGateway("/mg/pool/v1/draw/video", body, timeoutMs);
@@ -92,7 +133,8 @@ export function createComfyClient(config) {
     const url = data.FileUrl || `${gatewayUrl}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
     return {
       ok: true,
-      images: [{ url, filename: data.FileName }],
+      // 输出文件统一叫 files（图片/视频通用，语义正确）
+      files: [{ url, filename: data.FileName }],
       elapsedMs: (data.ElapsedSeconds ?? 0) * 1000,
       gatewayUrl,
     };

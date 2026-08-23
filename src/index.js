@@ -59,14 +59,10 @@ export const Config = z.object({
    * 也可显式配置，如 "~/src/baihua"）。
    */
   gitRepo: z.string().default(""),
-  /** 百花 Vault 服务地址（知识库检索/笔记；默认本机回环，k8s 部署填 ClusterIP）。 */
-  vaultUrl: z.string().default("http://127.0.0.1:8790"),
-  /** 百花 Family 服务地址（家庭数据；默认本机回环，k8s 部署填 ClusterIP）。 */
+  /** 百花 Family 服务地址（绘图网关默认目标；默认本机回环，跨机填目标节点地址）。 */
   familyUrl: z.string().default("http://127.0.0.1:8788"),
   /** 百花 WebUI 服务地址（“打开百花”入口自动登录用；默认本机回环，k8s 部署填对外地址）。 */
   webUrl: z.string().default("http://127.0.0.1:5177"),
-  /** ComfyUI 服务地址（出图工具；默认本机回环）。 */
-  comfyUrl: z.string().default("http://127.0.0.1:8188"),
   /** ComfyUI 出图模型类型：z-image-turbo（默认）或 sd15。 */
   comfyModelType: z.string().default("z-image-turbo"),
   comfyCheckpoint: z.string().default("v1-5-pruned-emaonly.safetensors"),
@@ -563,9 +559,32 @@ export function apply(ctx, config) {
   const comfy = createComfyClient(config);
   ctx.tools.register(
     defineTool({
+      name: "baihua_draw_status",
+      description:
+        "查询百花绘图网关能力（只读）：ComfyUI 在线状态、可用图像/视频 checkpoint、Z-Image-Turbo 的 UNet/CLIP/VAE 模型清单。支持跨机：drawGatewayUrl 指向任一百花节点。",
+      parameters: {},
+      output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+      async execute() {
+        const r = await comfy.status();
+        if (!r.ok) return `❌ ${r.detail}`;
+        const c = r.detail;
+        const lines = [
+          `ComfyUI 在线：${c.comfyOnline ? "✅" : "❌"}；图像 ${c.image ? "✅" : "❌"}；视频 ${c.video ? "✅" : "❌"}`,
+        ];
+        if (c.imageCheckpoints?.length) lines.push(`图像 checkpoint：${c.imageCheckpoints.join("、")}`);
+        if (c.videoCheckpoints?.length) lines.push(`视频 checkpoint：${c.videoCheckpoints.join("、")}`);
+        if (c.unetModels?.length) lines.push(`UNet 模型：${c.unetModels.join("、")}`);
+        if (c.clipModels?.length) lines.push(`CLIP 模型：${c.clipModels.join("、")}`);
+        if (c.vaeModels?.length) lines.push(`VAE 模型：${c.vaeModels.join("、")}`);
+        return lines.join("\n");
+      },
+    }),
+  );
+  ctx.tools.register(
+    defineTool({
       name: "baihua_draw",
       description:
-        "调用百花绘图网关生成 AI 图片（txt2img）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向；modelType 默认 z-image-turbo（Z-Image Turbo，1024 原生、8 步），也可选 sd15（SD1.5，512 原生、20 步）；width/height/steps 默认按模型类型选取。返回图片访问 URL（可用 web 工具打开查看）。支持跨机：drawGatewayUrl 指向任一百花节点。",
+        "调用百花绘图网关生成 AI 图片（txt2img）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向；modelType 默认 z-image-turbo（Z-Image Turbo，1024 原生、8 步），也可选 sd15（SD1.5，512 原生、20 步）；width/height/steps 默认按模型类型选取；seed/cfg/sampler/scheduler/unetName/clipName/vaeName 可选（不传用后端默认值）。返回图片访问 URL（可用 web 工具打开查看）。支持跨机：drawGatewayUrl 指向任一百花节点。",
       parameters: {
         prompt: { type: "string", required: true, description: "正向提示词（英文效果更佳）" },
         negativePrompt: { type: "string", description: "负向提示词" },
@@ -574,6 +593,13 @@ export function apply(ctx, config) {
         width: { type: "integer", description: "宽（默认按模型：turbo 1024 / sd15 512）" },
         height: { type: "integer", description: "高（默认按模型：turbo 1024 / sd15 512）" },
         steps: { type: "integer", description: "采样步数（默认按模型：turbo 8 / sd15 20）" },
+        seed: { type: "integer", description: "随机种子（默认随机；固定种子可复现结果）" },
+        cfg: { type: "number", description: "CFG 引导强度（默认按模型：turbo 1 / sd15 7）" },
+        sampler: { type: "string", description: "采样器名（默认按模型：turbo res_multistep / sd15 euler）" },
+        scheduler: { type: "string", description: "调度器名（默认按模型：turbo simple / sd15 normal）" },
+        unetName: { type: "string", description: "Z-Image-Turbo UNet 模型名（默认 z_image_turbo_bf16.safetensors）" },
+        clipName: { type: "string", description: "Z-Image-Turbo CLIP 模型名（默认 qwen_3_4b.safetensors）" },
+        vaeName: { type: "string", description: "Z-Image-Turbo VAE 模型名（默认 ae.safetensors）" },
       },
       output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
       async execute(args) {
@@ -583,13 +609,20 @@ export function apply(ctx, config) {
           width: Number(args.width) || undefined,
           height: Number(args.height) || undefined,
           steps: Number(args.steps) || undefined,
+          seed: args.seed != null ? Number(args.seed) : undefined,
+          cfg: args.cfg != null ? Number(args.cfg) : undefined,
+          sampler: args.sampler ? String(args.sampler) : undefined,
+          scheduler: args.scheduler ? String(args.scheduler) : undefined,
           modelType: args.modelType ? String(args.modelType) : undefined,
           checkpoint: args.checkpoint ? String(args.checkpoint) : undefined,
+          unetName: args.unetName ? String(args.unetName) : undefined,
+          clipName: args.clipName ? String(args.clipName) : undefined,
+          vaeName: args.vaeName ? String(args.vaeName) : undefined,
         });
         if (!r.ok) return `❌ ${r.error}`;
         return (
-          `✅ 已生成 ${r.images.length} 张图（${r.elapsedMs / 1000}s，模型 ${r.modelType}，${r.width}×${r.height}，${r.steps} 步）：\n` +
-          r.images.map((i) => `${i.url}`).join("\n")
+          `✅ 已生成 ${r.files.length} 张图（${r.elapsedMs / 1000}s，模型 ${r.modelType}，${r.width}×${r.height}，${r.steps} 步）：\n` +
+          r.files.map((i) => `${i.url}`).join("\n")
         );
       },
     }),
@@ -598,7 +631,7 @@ export function apply(ctx, config) {
     defineTool({
       name: "baihua_draw_video",
       description:
-        "调用百花绘图网关生成 AI 视频（txt2video，LTX Video）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向，width/height 建议 ≤768，length 帧数（默认 97，约 4 秒），fps 默认 25，steps 默认 20。生成约 1-5 分钟，返回视频访问 URL。支持跨机：drawGatewayUrl 指向任一百花节点。",
+        "调用百花绘图网关生成 AI 视频（txt2video，LTX Video）。参数 prompt 为正向提示词（可英文），negativePrompt 为负向，width/height 建议 ≤768，length 帧数（默认 97，约 4 秒），fps 默认 25，steps 默认 20；seed/cfg/sampler/scheduler 可选（不传用后端默认值）。生成约 1-5 分钟，返回视频访问 URL。支持跨机：drawGatewayUrl 指向任一百花节点。",
       parameters: {
         prompt: { type: "string", required: true, description: "正向提示词（英文效果更佳）" },
         negativePrompt: { type: "string", description: "负向提示词" },
@@ -607,6 +640,10 @@ export function apply(ctx, config) {
         length: { type: "integer", description: "帧数（默认 97，约 4 秒；25-121）" },
         fps: { type: "integer", description: "帧率（默认 25）" },
         steps: { type: "integer", description: "采样步数（默认 20）" },
+        seed: { type: "integer", description: "随机种子（默认随机）" },
+        cfg: { type: "number", description: "CFG 引导强度（默认 4）" },
+        sampler: { type: "string", description: "采样器名（默认 euler）" },
+        scheduler: { type: "string", description: "调度器名（默认 sgm_uniform）" },
       },
       output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
       async execute(args) {
@@ -618,11 +655,15 @@ export function apply(ctx, config) {
           length: Number(args.length) || 97,
           fps: Number(args.fps) || 25,
           steps: Number(args.steps) || 20,
+          seed: args.seed != null ? Number(args.seed) : undefined,
+          cfg: args.cfg != null ? Number(args.cfg) : undefined,
+          sampler: args.sampler ? String(args.sampler) : undefined,
+          scheduler: args.scheduler ? String(args.scheduler) : undefined,
         });
         if (!r.ok) return `❌ ${r.error}`;
         return (
           `✅ 已生成视频（${r.elapsedMs / 1000}s）：\n` +
-          r.images.map((i) => `${i.url}`).join("\n")
+          r.files.map((i) => `${i.url}`).join("\n")
         );
       },
     }),

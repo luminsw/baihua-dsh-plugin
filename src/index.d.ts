@@ -15,14 +15,10 @@ export interface BridgeConfig {
   lanListen?: string;
   /** 百花服务运维（bh CLI）入口；留空禁用运维端点与工具。 */
   bhCommand?: string;
-  /** 百花 Vault 服务地址（知识库检索/笔记）。 */
-  vaultUrl?: string;
-  /** 百花 Family 服务地址（家庭数据）。 */
+  /** 百花 Family 服务地址（绘图网关默认目标）。 */
   familyUrl?: string;
   /** 百花 WebUI 服务地址（“打开百花”入口自动登录用）。 */
   webUrl?: string;
-  /** ComfyUI 服务地址（出图工具）。 */
-  comfyUrl?: string;
   /** ComfyUI 默认 checkpoint。 */
   comfyCheckpoint?: string;
   /** 百花算力池绘图网关（/mg/pool/v1/draw/* 所在 Family）。空 = 用 familyUrl。跨机时可指向任一百花节点。 */
