@@ -17,19 +17,21 @@ function headersFor(token) {
 }
 
 export function createComfyClient(config) {
-  const gatewayUrl = (config.drawGatewayUrl || config.familyUrl || "http://127.0.0.1:8788")
+  // 支持传 config 对象或 getter（设置页表单改了即时生效）
+  const cfg = () => (typeof config === "function" ? config() : config);
+  const gatewayUrl = () => (cfg().drawGatewayUrl || cfg().familyUrl || "http://127.0.0.1:8788")
     .trim().replace(/\/+$/, "");
-  const token = config.drawToken || "";
-  const defaultModelType = normalizeModelType(config.comfyModelType || "z-image-turbo");
+  const token = () => cfg().drawToken || "";
+  const defaultModelType = () => normalizeModelType(cfg().comfyModelType || "z-image-turbo");
 
   /** 绘图能力查询（ComfyUI 在线 + 支持图像/视频）。返回的 detail 统一 camelCase 键。 */
   async function status(timeoutMs = 6000) {
     try {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), timeoutMs);
-      const res = await fetch(`${gatewayUrl}/mg/pool/v1/draw/capabilities`, {
+      const res = await fetch(`${gatewayUrl()}/mg/pool/v1/draw/capabilities`, {
         signal: ac.signal,
-        headers: token ? { "X-Server-Token": token } : {},
+        headers: token() ? { "X-Server-Token": token() } : {},
       });
       clearTimeout(timer);
       if (!res.ok) return { ok: false, detail: `绘图网关 HTTP ${res.status}` };
@@ -61,7 +63,7 @@ export function createComfyClient(config) {
     modelType,
     timeoutMs = 300000,
   }) {
-    const mt = normalizeModelType(modelType || defaultModelType);
+    const mt = normalizeModelType(modelType || defaultModelType());
     const isTurbo = mt === "z-image-turbo";
     const w = clampInt(width || (isTurbo ? 1024 : 512), 256, 1024);
     const h = clampInt(height || (isTurbo ? 1024 : 512), 256, 1024);
@@ -122,9 +124,9 @@ export function createComfyClient(config) {
   async function callGateway(path, body, timeoutMs) {
     let res;
     try {
-      res = await fetch(`${gatewayUrl}${path}`, {
+      res = await fetch(`${gatewayUrl()}${path}`, {
         method: "POST",
-        headers: headersFor(token),
+        headers: headersFor(token()),
         body: JSON.stringify(body),
       });
     } catch (e) {
@@ -133,17 +135,17 @@ export function createComfyClient(config) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: `绘图网关失败（HTTP ${res.status}）：${JSON.stringify(data).slice(0, 300)}` };
     if (!data.Success) return { ok: false, error: data.Error || "生成失败", elapsedMs: (data.ElapsedSeconds ?? 0) * 1000 };
-    const url = data.FileUrl || `${gatewayUrl}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
+    const url = data.FileUrl || `${gatewayUrl()}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
     return {
       ok: true,
       // 输出文件统一叫 files（图片/视频通用，语义正确）
       files: [{ url, filename: data.FileName }],
       elapsedMs: (data.ElapsedSeconds ?? 0) * 1000,
-      gatewayUrl,
+      gatewayUrl: gatewayUrl(),
     };
   }
 
-  return { status, generate, generateVideo, gatewayUrl };
+  return { status, generate, generateVideo, gatewayUrl: gatewayUrl() };
 }
 
 function clampInt(v, min, max) {

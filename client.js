@@ -36,12 +36,29 @@ window.__ModuleLoader__.load({
     // 长操作（后台执行，返回 opId）
     const LONG_ACTIONS = ["build", "build-restart", "update", "up", "deploy"];
 
-    function BaihuaStatusCard(_props) {
+    // 可配置字段（与 host Config 对齐；token/drawToken 为 write-only）
+    const BAIHUA_FIELDS = [
+      { key: "token", label: "桥接鉴权 token", hint: "除 /status 外接口要求 Bearer token（write-only）", type: "password" },
+      { key: "familyUrl", label: "Family 服务地址", hint: "如 http://127.0.0.1:8788", type: "text" },
+      { key: "webUrl", label: "WebUI 地址", hint: "「打开百花」自动登录用", type: "text" },
+      { key: "drawGatewayUrl", label: "绘图网关地址", hint: "空=用 familyUrl；跨机可指向任一百花节点", type: "text" },
+      { key: "drawToken", label: "绘图网关 token", hint: "write-only", type: "password" },
+      { key: "bhCommand", label: "bh 命令", hint: "留空禁用运维；默认 bh；重启生效", type: "text" },
+      { key: "gitRepo", label: "git 仓库根", hint: "提交推送用；默认自动推断", type: "text" },
+      { key: "lanListen", label: "局域网监听", hint: "如 0.0.0.0:3081；配非回环需同时设 token", type: "text" },
+    ];
+
+    function BaihuaStatusCard(props) {
+      const scope = props.scope;
       const [data, setData] = useState(null);
       const [err, setErr] = useState(null);
       const [busy, setBusy] = useState(false);
       const [msg, setMsg] = useState(null); // { ok, text } 操作结果提示
       const [open, setOpen] = useState(true); // 开合：与内置卡片一致
+      const [snap, setSnap] = useState(null);
+      const [draft, setDraft] = useState({});
+      const [saving, setSaving] = useState(false);
+      const [saveMsg, setSaveMsg] = useState(null);
 
       const load = useCallback(async () => {
         try {
@@ -96,6 +113,66 @@ window.__ModuleLoader__.load({
         },
         [busy, load],
       );
+
+      // 绑定 settings scope：订阅快照，外来变更时回填草稿
+      useEffect(() => {
+        if (!scope) return;
+        const read = () => {
+          const s = scope.getSnapshot();
+          setSnap(s);
+          const v = s.value || {};
+          const d = {};
+          for (const f of BAIHUA_FIELDS) {
+            if (f.type === "password") continue;
+            d[f.key] = v[f.key] === undefined ? "" : String(v[f.key]);
+          }
+          setDraft(d);
+        };
+        read();
+        const off = scope.subscribe(read);
+        return () => off();
+      }, [scope]);
+
+      const setField = (key, raw) => setDraft((d) => ({ ...d, [key]: raw }));
+
+      const save = useCallback(async () => {
+        if (!scope || saving) return;
+        setSaving(true);
+        setSaveMsg(null);
+        try {
+          const v = (scope.getSnapshot().value) || {};
+          const ops = [];
+          for (const f of BAIHUA_FIELDS) {
+            const raw = draft[f.key];
+            if (f.type === "password") {
+              const text = String(raw || "").trim();
+              if (text) ops.push(() => scope.set(f.key, text));
+              continue;
+            }
+            const text = String(raw === undefined ? "" : raw).trim();
+            const cur = v[f.key] === undefined ? "" : String(v[f.key]);
+            if (text === cur) continue;
+            ops.push(text ? () => scope.set(f.key, text) : () => scope.unset(f.key));
+          }
+          for (const op of ops) await op();
+          setSaveMsg({ ok: true, text: "已保存（部分参数重启后生效）" });
+        } catch (e) {
+          setSaveMsg({ ok: false, text: "保存失败：" + (e instanceof Error ? e.message : String(e)) });
+        } finally {
+          setSaving(false);
+        }
+      }, [scope, draft, saving]);
+
+      const discard = useCallback(() => {
+        setSaveMsg(null);
+        const v = (scope && scope.getSnapshot().value) || {};
+        const d = {};
+        for (const f of BAIHUA_FIELDS) {
+          if (f.type === "password") continue;
+          d[f.key] = v[f.key] === undefined ? "" : String(v[f.key]);
+        }
+        setDraft(d);
+      }, [scope]);
 
       const services = data?.services ?? [];
       const summary = data?.summary;
@@ -275,6 +352,38 @@ window.__ModuleLoader__.load({
                   )
                   .join(" · ")
             )
+          : null,
+        scope && snap
+          ? React.createElement(
+              "div",
+              { style: { marginTop: 10, borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 8 } },
+              React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 4 } }, "参数配置" + (snap.status === "unavailable" ? "（当前不可编辑）" : "")),
+              BAIHUA_FIELDS.map((f) => {
+                const val = draft[f.key];
+                const isNum = f.type === "number";
+                const isBool = f.type === "boolean";
+                return React.createElement(
+                  "div",
+                  { key: f.key, style: { display: "flex", flexDirection: "column", gap: 4, padding: "8px 0" } },
+                  React.createElement("label", { style: { fontSize: 12, fontWeight: 500, color: "var(--dsw-alias-label-primary)" } }, f.label),
+                  isBool ? null : React.createElement("input", {
+                    style: { font: "inherit", fontSize: 13, color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 },
+                    type: f.type === "password" ? "password" : "text",
+                    inputMode: isNum ? "numeric" : undefined,
+                    value: val === undefined ? "" : String(val),
+                    placeholder: f.type === "password" ? "留空保持现状" : undefined,
+                    disabled: !(snap.writable !== false) || saving,
+                    onChange: (e) => setField(f.key, e.target.value),
+                  }),
+                  React.createElement("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)", lineHeight: 1.5 } }, f.hint)
+                );
+              }),
+              React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8, alignItems: "center" } },
+                React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: discard }, "放弃修改"),
+                React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid transparent", background: "var(--dsw-alias-label-primary)", color: "var(--dsw-alias-bg-layer-3)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: save }, saving ? "保存中…" : "保存"),
+                saveMsg ? React.createElement("span", { style: { fontSize: 12, color: saveMsg.ok ? "#2e7d32" : "#c0392b" } }, saveMsg.text) : null
+              )
+            )
           : null
               )
           : null
@@ -285,13 +394,26 @@ window.__ModuleLoader__.load({
       name: "dsh-baihua-bridge-client",
       inject: ["slots"],
       apply(ctx) {
+        // 绑定 baihua settings namespace（host 提供 settingsScope 服务；缺失时退化为只读状态卡）
+        const settingsScope = ctx.get("settingsScope");
+        let scope = null;
+        if (settingsScope) {
+          try {
+            scope = settingsScope.bind({ namespace: "baihua" });
+            ctx.onDispose(() => {
+              try { scope?.dispose?.(); } catch { /* noop */ }
+            });
+          } catch (e) {
+            console.log("[dsh-baihua-bridge] settingsScope.bind 失败，退化为只读：", e.message);
+          }
+        }
         ctx.slots.inject("settings.plugin.item", function* () {
           yield ctx.slots.register(
             {
               name: "settings.plugin.item",
               key: "baihua",
               locale: "settings.baihua",
-              inject: () => ({}),
+              inject: () => ({ scope }),
             },
             BaihuaStatusCard
           );

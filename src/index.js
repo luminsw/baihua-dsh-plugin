@@ -36,7 +36,7 @@ export const Config = z.object({
   /** history 响应体大小上限（字节）；超出部分截断并标记 truncated。 */
   maxBufferedText: z.number().default(1_000_000),
   /** 可选共享密钥：设置后，除 /status 外的所有接口要求 Bearer token（HTTP）或 ?token=（WS）。 */
-  token: z.string(),
+  token: z.string().role("secret"),
   /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的 provider 路由。 */
   fallbackProvider: z.string().default("deepseek-official"),
   /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的模型。 */
@@ -69,7 +69,7 @@ export const Config = z.object({
   /** 百花算力池绘图网关（/mg/pool/v1/draw/* 所在 Family）。空 = 用 familyUrl。跨机时可指向任一百花节点。 */
   drawGatewayUrl: z.string().default(""),
   /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
-  drawToken: z.string().default(""),
+  drawToken: z.string().role("secret").default(""),
 });
 
 /** 从第一条用户消息抽取会话标题候选。 */
@@ -200,16 +200,24 @@ export function apply(ctx, config) {
   const active = new Map();
   /** 会话元数据清单（内存，供列表展示）。 */
   const metas = [];
-  const maxBufferedText = config.maxBufferedText;
+  // 设置页表单可改配置：setSource 重绑 current，运行时读最新值（修 setSource no-op bug）。
+  let current = () => config;
+  installSettingsSection(ctx, SETTINGS_NS, Config, config, {
+    setSource: (source) => { current = source; },
+    onChange: () => {},
+  });
+  const cfg = () => current();
+  const maxBufferedText = cfg().maxBufferedText;
 
-  // ---------- 可选鉴权 ----------
-  const bridgeToken = config.token;
+  // ---------- 可选鉴权（token 动态读：设置页改了立即生效）----------
+  const bridgeToken = () => cfg().token;
   function authorized(req) {
-    if (!bridgeToken) return true;
+    const bt = bridgeToken();
+    if (!bt) return true;
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.searchParams.get("token") === bridgeToken) return true;
+    if (url.searchParams.get("token") === bt) return true;
     const header = req.headers?.authorization;
-    return typeof header === "string" && header === `Bearer ${bridgeToken}`;
+    return typeof header === "string" && header === `Bearer ${bt}`;
   }
   function unauthorized(res) {
     res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
@@ -217,7 +225,7 @@ export function apply(ctx, config) {
   }
 
   // ---------- 可选：桥接接口局域网监听（仅 /dsh-bridge/*，DSH 核心保持 127.0.0.1） ----------
-  const lanListen = config.lanListen;
+  const lanListen = cfg().lanListen;
   let lanHost = null;
   let lanPort = 0;
   if (lanListen) {
@@ -231,7 +239,7 @@ export function apply(ctx, config) {
       throw new Error(`[dsh-baihua-bridge] lanListen 端口无效: "${lanListen}"`);
     }
     const loopback = lanHost === "127.0.0.1" || lanHost === "localhost" || lanHost === "::1";
-    if (!loopback && !bridgeToken) {
+    if (!loopback && !bridgeToken()) {
       throw new Error("[dsh-baihua-bridge] lanListen 对外暴露（非回环地址）必须同时配置 token");
     }
   }
@@ -286,8 +294,8 @@ export function apply(ctx, config) {
     const defaultModel = ctx.get("agentDefaultModel");
     const selection =
       defaultModel?.currentSelection?.() ?? {
-        provider: config.fallbackProvider,
-        model: config.fallbackModel,
+        provider: cfg().fallbackProvider,
+        model: cfg().fallbackModel,
       };
     const workingDir = cwd ?? process.cwd();
 
@@ -344,12 +352,7 @@ export function apply(ctx, config) {
   const toolStats = { total: 0, failed: 0, byTool: {} };
   const toolStarted = new WeakMap();
 
-  // ---------- DSH 设置页命名空间（让「百花服务状态」卡片在 DSH UI 设置页渲染）----------
-  // 仅注册命名空间供客户端卡片配对；卡片本体只读展示，不在此编辑配置。
-  installSettingsSection(ctx, SETTINGS_NS, Config, config, {
-    setSource: () => {},
-    onChange: () => {},
-  });
+  // ---------- DSH 设置页命名空间已在 apply 顶部注册（含 setSource 接线）----------
 
   const registerBhTools = () => {
     if (!bhOps) return;
@@ -559,8 +562,8 @@ export function apply(ctx, config) {
             url: args.url ? String(args.url) : undefined,
             target: args.target ? String(args.target) : undefined,
             depth: args.depth != null ? Number(args.depth) : undefined,
-            bhCommand: config.bhCommand,
-            gitRepo: config.gitRepo,
+            bhCommand: cfg().bhCommand,
+            gitRepo: cfg().gitRepo,
           });
           return op
             ? `已开始引导安装（opId=${op.id}）。用 bh_op_status 查询进度。`
@@ -573,7 +576,7 @@ export function apply(ctx, config) {
 
   // ---------- 启动引导检测：本机没有百花源码时提示可用 bh_bootstrap 下载 ----------
   try {
-    const detected = detectRepoRoot({ bhCommand: config.bhCommand, gitRepo: config.gitRepo });
+    const detected = detectRepoRoot({ bhCommand: cfg().bhCommand, gitRepo: cfg().gitRepo });
     if (!detected) {
       console.warn(
         `[dsh-baihua-bridge] 未检测到百花源码（~/src/baihua 等常见路径、BAIHUA_HOME、bhCommand 均无）。` +
@@ -586,7 +589,7 @@ export function apply(ctx, config) {
 
 
   // ---------- 百花绘图工具（经算力池绘图网关，支持跨机） ----------
-  const comfy = createComfyClient(config);
+  const comfy = createComfyClient(cfg);
   ctx.tools.register(
     defineTool({
       name: "baihua_draw_status",
@@ -798,7 +801,7 @@ export function apply(ctx, config) {
   function handleOpenBaihua(req, res) {
     if (req.method !== "GET") return sendJson(res, 405, { ok: false, error: "method not allowed" });
     if (!sameOriginRequest(req)) return sendJson(res, 403, { ok: false, error: "仅允许 DSH 页面同源调用" });
-    const base = String(config.webUrl || "http://127.0.0.1:5177").trim().replace(/\/+$/, "");
+    const base = String(cfg().webUrl || "http://127.0.0.1:5177").trim().replace(/\/+$/, "");
     if (!base) return sendJson(res, 400, { ok: false, error: "webUrl 未配置" });
     void (async () => {
       try {
