@@ -18,6 +18,9 @@ const QUICK_TIMEOUT_MS = 60_000;
 const STATUS_TIMEOUT_MS = 20_000;
 const MAX_TAIL = 16_000;
 
+/** NuGet 包缓存损坏的特征错误（NETSDK1064 / restore 部分完成 / 包 not found）。命中即清理 buildkit 缓存后重试。 */
+const NUGET_CACHE_ERROR_RE = /NETSDK1064|only partially completed|was not found/i;
+
 /** 长操作允许的命令（避免任意命令执行面）。 */
 const LONG_ACTIONS = new Set(["build", "update", "up", "deploy", "build-restart"]);
 /** 快速操作允许的命令。 */
@@ -328,7 +331,12 @@ export function createBhOps(config) {
     void (async () => {
       const buildArgs = ["build"];
       if (service) buildArgs.push(service);
-      const buildCode = await run(buildArgs, "编译");
+      let buildCode = await run(buildArgs, "编译");
+      if (buildCode !== 0 && NUGET_CACHE_ERROR_RE.test(entry.tail)) {
+        append("\n[build-restart] 检测到 NuGet 包缓存损坏（NETSDK1064），清理构建缓存后重试…\n");
+        await run(["prune"], "清理构建缓存");
+        buildCode = await run(buildArgs, "编译(重试)");
+      }
       if (buildCode !== 0) {
         entry.running = false;
         entry.exitCode = buildCode;
@@ -345,6 +353,77 @@ export function createBhOps(config) {
     return entry;
   }
 
+  /**
+   * 链式一键更新：bh update（git pull + 编译变更镜像 + 部署）。
+   * 若编译阶段因 NuGet 包缓存损坏（NETSDK1064）失败，自动 bh prune 清理 buildkit 缓存后
+   * 重建 4 个 .NET 应用镜像并部署一次（避免 ORIG_HEAD==HEAD 时 changed_images 误跳过构建）。
+   * 说明：bh update 内部按 changed_images 决定重建哪些镜像；这里是"再彻底重建一次"，宁可多构建也不留半失败状态。
+   */
+  function startUpdate() {
+    const id = `op-${Date.now()}-${++seq}`;
+    const logPath = `/tmp/bh-${id}.log`;
+    const entry = {
+      id,
+      action: "update",
+      service: "",
+      startedAt: new Date().toISOString(),
+      running: true,
+      exitCode: null,
+      logPath,
+      tail: "",
+    };
+    const append = (s) => {
+      entry.tail = (entry.tail + s).slice(-MAX_TAIL);
+      try {
+        appendFileSync(logPath, s);
+      } catch {
+        /* noop */
+      }
+    };
+    ops.set(id, entry);
+
+    const run = (args, label) =>
+      new Promise((resolve) => {
+        append(`\n===== ${label}（bh ${args.join(" ")}）=====\n`);
+        const [cmd, argv] = bhArgv(args);
+        const child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
+        child.stdout.on("data", (d) => append(d.toString()));
+        child.stderr.on("data", (d) => append(d.toString()));
+        const settle = (code) => {
+          append(`\n[${label}] exit code: ${code}\n`);
+          try {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          } catch {
+            /* noop */
+          }
+          resolve(code);
+        };
+        child.on("exit", settle);
+        child.on("close", settle); // 幂等兜底
+        child.on("error", (err) => {
+          append(`\n[${label}] spawn error: ${err.message}\n`);
+          entry.error = err.message;
+          resolve(-1);
+        });
+      });
+
+    void (async () => {
+      let code = await run(["update"], "一键更新");
+      if (code !== 0 && NUGET_CACHE_ERROR_RE.test(entry.tail)) {
+        append("\n[update] 检测到 NuGet 包缓存损坏（NETSDK1064），清理 buildkit 构建缓存后重建并部署…\n");
+        await run(["prune"], "清理构建缓存");
+        code = await run(["build", "vault", "ai", "webui", "family"], "重建 .NET 镜像");
+        if (code === 0) code = await run(["deploy"], "部署");
+      }
+      entry.running = false;
+      entry.exitCode = code;
+      append(`\n[update] ${code === 0 ? "完成 ✅" : "失败（exit " + code + "）"}。\n`);
+    })();
+
+    return entry;
+  }
+
   /** 长操作：build [svc] / update / up [--all] / deploy / build-restart <svc>。返回 opId。 */
   function startLongAction(name, service) {
     if (!LONG_ACTIONS.has(name)) return { ok: false, error: `不支持的长操作: ${name}` };
@@ -352,6 +431,10 @@ export function createBhOps(config) {
       if (!service) return { ok: false, error: "build-restart 需要指定服务（family/ai/vault/webui/openvino/postgres）" };
       const op = startBuildRestart(service);
       return { ok: true, opId: op.id, action: "build-restart", service };
+    }
+    if (name === "update") {
+      const op = startUpdate();
+      return { ok: true, opId: op.id, action: "update", service: "" };
     }
     if (name === "up" && service === "--all") {
       const op = startLong("up", "--all");

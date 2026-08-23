@@ -65,18 +65,8 @@ window.__ModuleLoader__.load({
           if (busy) return;
           // 危险/耗时操作先确认
           if (action === "build-restart" || action === "update" || action === "build") {
-            const label = action === "update" ? "一键更新（git pull + 编译 + 部署）" : `编译${service ? " " + service : ""}`;
+            const label = action === "update" ? "一键更新（git pull + 编译 + 部署；编译失败会自动清理缓存重试）" : `编译${service ? " " + service : ""}`;
             if (!window.confirm(`确定执行「${label}」？可能需要数分钟。`)) return;
-          }
-          if (action === "git-commit-push") {
-            const msg = window.prompt("提交信息（git commit -m）：", message || "");
-            if (msg === null) return;
-            if (!msg.trim()) {
-              setMsg({ ok: false, text: "提交信息不能为空" });
-              return;
-            }
-            if (!window.confirm(`确认提交并推送「${msg.trim()}」？`)) return;
-            message = msg.trim();
           }
           setBusy(true);
           setMsg(null);
@@ -88,7 +78,7 @@ window.__ModuleLoader__.load({
             });
             const j = await res.json();
             if (j.ok) {
-              if (LONG_ACTIONS.includes(action) || action === "git-commit-push") {
+              if (LONG_ACTIONS.includes(action)) {
                 setMsg({ ok: true, text: `已开始 ${action}${service ? " " + service : ""}（opId=${j.opId}），后台执行中…` });
               } else {
                 setMsg({ ok: true, text: `${action} ${service} 成功` });
@@ -146,40 +136,10 @@ window.__ModuleLoader__.load({
               {
                 style: btn,
                 disabled: busy,
-                onClick: () => runAction("build-restart", "family"),
-                title: "编译并重启 family",
-              },
-              "🔧编译 family"
-            ),
-            React.createElement(
-              "button",
-              {
-                style: btn,
-                disabled: busy,
-                onClick: () => runAction("build-restart", "webui"),
-                title: "编译并重启 webui",
-              },
-              "🔧编译 webui"
-            ),
-            React.createElement(
-              "button",
-              {
-                style: btn,
-                disabled: busy,
                 onClick: () => runAction("update"),
-                title: "一键更新：git pull + 编译变更镜像 + 部署",
+                title: "一键更新：git pull + 编译变更镜像 + 部署；若编译因 NuGet 缓存损坏（NETSDK1064）失败会自动清理缓存重试",
               },
               "🔄一键更新"
-            ),
-            React.createElement(
-              "button",
-              {
-                style: btn,
-                disabled: busy,
-                onClick: () => runAction("git-commit-push", ""),
-                title: "提交并推送百花仓库（git add -A + commit + push）",
-              },
-              "⬆️提交推送"
             ),
             React.createElement(
               "button",
@@ -195,7 +155,7 @@ window.__ModuleLoader__.load({
           React.createElement(
             "div",
             { style: { fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)", marginTop: 2 } },
-            "百花 k8s 服务运行状态与版本对比，可在卡片上直接启停/编译/更新。"
+            "百花 k8s 服务运行状态与版本对比，可启停/重启/编译各服务，或一键更新（编译失败自动清理缓存重试）。"
           )
         ),
         err
