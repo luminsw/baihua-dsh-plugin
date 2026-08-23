@@ -370,6 +370,29 @@ export function apply(ctx, config) {
       }
       return next();
     });
+
+    // ---------- 观测：工具调用计数 + 耗时（结构化日志；计数经 /dsh-bridge/status 暴露） ----------
+    // 注册在审批门之前（prepend），保证先记开始时间再进入后续流水线。
+    const toolStats = { total: 0, failed: 0, byTool: {} };
+    const toolStarted = new WeakMap();
+    ctx.on(
+      "tools/pre-execute",
+      (exec, next) => {
+        toolStarted.set(exec, Date.now());
+        return next();
+      },
+      { prepend: true },
+    );
+    ctx.on("tools/post-execute", (exec, result) => {
+      const started = toolStarted.get(exec);
+      toolStarted.delete(exec);
+      const ms = started == null ? -1 : Date.now() - started;
+      const isError = result?.isError === true;
+      toolStats.total += 1;
+      if (isError) toolStats.failed += 1;
+      toolStats.byTool[exec.name] = (toolStats.byTool[exec.name] ?? 0) + 1;
+      console.log(`[dsh-baihua-bridge] tool ${exec.name} ${isError ? "FAIL" : "ok"} ${ms}ms`);
+    });
     const j = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
     ctx.tools.register(
       defineTool({
@@ -868,6 +891,7 @@ export function apply(ctx, config) {
         activeSessions: active.size,
         loadedSessions: metas.length,
         pid: process.pid,
+        toolStats,
       }),
     );
   }
