@@ -383,7 +383,10 @@ export function apply(ctx, config) {
       },
       { prepend: true },
     );
-    ctx.on("tools/post-execute", (exec, result) => {
+    // 注意：tools/post-execute 是 cordis waterfall 链，必须调用 next() 并返回其
+    // 结果（PostToolDecision）；否则会 veto 整条链且 DSH 侧 decision 为 undefined，
+    // 导致每次工具调用崩溃（Cannot read properties of undefined (reading 'kind')）。
+    ctx.on("tools/post-execute", (exec, result, next) => {
       const started = toolStarted.get(exec);
       toolStarted.delete(exec);
       const ms = started == null ? -1 : Date.now() - started;
@@ -392,6 +395,7 @@ export function apply(ctx, config) {
       if (isError) toolStats.failed += 1;
       toolStats.byTool[exec.name] = (toolStats.byTool[exec.name] ?? 0) + 1;
       console.log(`[dsh-baihua-bridge] tool ${exec.name} ${isError ? "FAIL" : "ok"} ${ms}ms`);
+      return next();
     });
     const j = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
     ctx.tools.register(
