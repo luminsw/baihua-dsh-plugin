@@ -36,16 +36,17 @@ window.__ModuleLoader__.load({
     // 长操作（后台执行，返回 opId）
     const LONG_ACTIONS = ["build", "build-restart", "update", "up", "deploy"];
 
-    // 可配置字段（与 host Config 对齐；token/drawToken 为 write-only）
+    // 可配置字段（与 host Config 对齐；token/drawToken 为 write-only）。
+    // 这些字段全部归入「高级设置」（默认折叠）：零配置自举下单机部署无需改任何一项。
     const BAIHUA_FIELDS = [
+      { key: "familyUrl", label: "Family 服务地址", hint: "空=自动发现", type: "text" },
+      { key: "webUrl", label: "WebUI 地址", hint: "「打开百花」自动登录用；空=自动发现", type: "text" },
+      { key: "drawGatewayUrl", label: "绘图网关地址", hint: "空=自动发现/用 familyUrl；跨机指向其它节点", type: "text" },
+      { key: "drawToken", label: "绘图网关 token", hint: "write-only；空=自动发现", type: "password" },
       { key: "token", label: "桥接鉴权 token", hint: "除 /status 外接口要求 Bearer token（write-only）", type: "password" },
-      { key: "familyUrl", label: "Family 服务地址", hint: "如 http://127.0.0.1:8788", type: "text" },
-      { key: "webUrl", label: "WebUI 地址", hint: "「打开百花」自动登录用", type: "text" },
-      { key: "drawGatewayUrl", label: "绘图网关地址", hint: "空=用 familyUrl；跨机可指向任一百花节点", type: "text" },
-      { key: "drawToken", label: "绘图网关 token", hint: "write-only", type: "password" },
+      { key: "lanListen", label: "局域网监听", hint: "如 0.0.0.0:3081；配非回环需同时设 token", type: "text" },
       { key: "bhCommand", label: "bh 命令", hint: "留空禁用运维；默认 bh；重启生效", type: "text" },
       { key: "gitRepo", label: "git 仓库根", hint: "提交推送用；默认自动推断", type: "text" },
-      { key: "lanListen", label: "局域网监听", hint: "如 0.0.0.0:3081；配非回环需同时设 token", type: "text" },
     ];
 
     function BaihuaStatusCard(props) {
@@ -60,6 +61,7 @@ window.__ModuleLoader__.load({
       const [saving, setSaving] = useState(false);
       const [saveMsg, setSaveMsg] = useState(null);
       const [discovered, setDiscovered] = useState(null);
+      const [showAdvanced, setShowAdvanced] = useState(false); // 「高级设置」开合：默认收起
 
       // 展示「已自动发现」的百花配置（只读：从本机 /api/dsh/config 拉取，零配置自举结果）
       useEffect(() => {
@@ -216,6 +218,47 @@ window.__ModuleLoader__.load({
         ? " · " + git.head + (git.dirty ? " ⚠️未提交" : "")
         : "";
 
+      // 单个配置字段节点（文本/密码）
+      const fieldNode = (f) => {
+        const val = draft[f.key];
+        return React.createElement(
+          "div",
+          { key: f.key, style: { display: "flex", flexDirection: "column", gap: 4, padding: "8px 0" } },
+          React.createElement("label", { style: { fontSize: 12, fontWeight: 500, color: "var(--dsw-alias-label-primary)" } }, f.label),
+          React.createElement("input", {
+            style: { font: "inherit", fontSize: 13, color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 },
+            type: f.type === "password" ? "password" : "text",
+            value: val === undefined ? "" : String(val),
+            placeholder: f.type === "password" ? "留空保持现状" : undefined,
+            disabled: !(snap.writable !== false) || saving,
+            onChange: (e) => setField(f.key, e.target.value),
+          }),
+          React.createElement("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)", lineHeight: 1.5 } }, f.hint)
+        );
+      };
+
+      // 「高级设置」折叠开关 + 保存/放弃按钮
+      const advancedToggle = React.createElement(
+        "button",
+        {
+          type: "button",
+          style: { appearance: "none", display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", font: "inherit", color: "var(--dsw-alias-label-primary)", background: "transparent", border: "none", padding: "8px 0", margin: 0, cursor: "pointer", fontSize: 13, fontWeight: 600 },
+          "aria-expanded": showAdvanced,
+          onClick: () => setShowAdvanced(!showAdvanced),
+        },
+        React.createElement("span", { style: { flex: 1, minWidth: 0 } }, "高级设置（" + BAIHUA_FIELDS.length + " 项）" + (snap.status === "unavailable" ? " · 当前不可编辑" : "")),
+        React.createElement("svg", { width: 14, height: 14, viewBox: "0 0 14 14", fill: "none", style: { color: "var(--dsw-alias-label-tertiary)", flex: "none", transition: "transform .16s", transform: showAdvanced ? "rotate(180deg)" : "none" } },
+          React.createElement("path", { d: "M3 5.5L7 9.5L11 5.5", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" })
+        )
+      );
+      const saveButtons = React.createElement(
+        "div",
+        { style: { display: "flex", gap: 8, marginTop: 4, alignItems: "center" } },
+        React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: discard }, "放弃修改"),
+        React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid transparent", background: "var(--dsw-alias-label-primary)", color: "var(--dsw-alias-bg-layer-3)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: save }, saving ? "保存中…" : "保存"),
+        saveMsg ? React.createElement("span", { style: { fontSize: 12, color: saveMsg.ok ? "#2e7d32" : "#c0392b" } }, saveMsg.text) : null
+      );
+
       return React.createElement(
         "div",
         { style: base },
@@ -367,41 +410,22 @@ window.__ModuleLoader__.load({
               "div",
               { style: { marginTop: 10, borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 8 } },
               discovered && discovered.ok
-                ? React.createElement("div", { style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 8, lineHeight: 1.6 } },
-                    React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 2 } }, "已自动发现（零配置自举）"),
-                    React.createElement("div", null, "Family: " + (discovered.familyUrl || "—")),
-                    React.createElement("div", null, "Vault: " + (discovered.vaultUrl || "—")),
-                    React.createElement("div", null, "AI: " + (discovered.aiUrl || "—")),
-                    React.createElement("div", null, "算力池: " + (discovered.poolUrl || "—")),
+                ? React.createElement("div", { style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 4, lineHeight: 1.6 } },
+                    React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 2 } }, "已自动发现（零配置自举，一般无需配置）"),
+                    React.createElement("div", null, "Family: " + (discovered.familyUrl || "—") + " · Vault: " + (discovered.vaultUrl || "—")),
+                    React.createElement("div", null, "AI: " + (discovered.aiUrl || "—") + " · 算力池: " + (discovered.poolUrl || "—")),
                     React.createElement("div", null, "绘图: " + (discovered.drawGatewayUrl || "—"))
                   )
                 : null,
-              React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 4 } }, "参数配置" + (snap.status === "unavailable" ? "（当前不可编辑）" : "")),
-              BAIHUA_FIELDS.map((f) => {
-                const val = draft[f.key];
-                const isNum = f.type === "number";
-                const isBool = f.type === "boolean";
-                return React.createElement(
-                  "div",
-                  { key: f.key, style: { display: "flex", flexDirection: "column", gap: 4, padding: "8px 0" } },
-                  React.createElement("label", { style: { fontSize: 12, fontWeight: 500, color: "var(--dsw-alias-label-primary)" } }, f.label),
-                  isBool ? null : React.createElement("input", {
-                    style: { font: "inherit", fontSize: 13, color: "var(--dsw-alias-label-primary)", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 },
-                    type: f.type === "password" ? "password" : "text",
-                    inputMode: isNum ? "numeric" : undefined,
-                    value: val === undefined ? "" : String(val),
-                    placeholder: f.type === "password" ? "留空保持现状" : undefined,
-                    disabled: !(snap.writable !== false) || saving,
-                    onChange: (e) => setField(f.key, e.target.value),
-                  }),
-                  React.createElement("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary)", lineHeight: 1.5 } }, f.hint)
-                );
-              }),
-              React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8, alignItems: "center" } },
-                React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: discard }, "放弃修改"),
-                React.createElement("button", { style: { font: "inherit", fontSize: 13, padding: "5px 14px", borderRadius: 8, border: "1px solid transparent", background: "var(--dsw-alias-label-primary)", color: "var(--dsw-alias-bg-layer-3)", cursor: saving ? "not-allowed" : "pointer" }, disabled: saving || snap.writable === false, onClick: save }, saving ? "保存中…" : "保存"),
-                saveMsg ? React.createElement("span", { style: { fontSize: 12, color: saveMsg.ok ? "#2e7d32" : "#c0392b" } }, saveMsg.text) : null
-              )
+              advancedToggle,
+              showAdvanced
+                ? React.createElement(
+                    "div",
+                    null,
+                    BAIHUA_FIELDS.map(fieldNode),
+                    saveButtons
+                  )
+                : null
             )
           : null
               )
