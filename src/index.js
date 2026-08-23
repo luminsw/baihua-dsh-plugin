@@ -337,6 +337,13 @@ export function apply(ctx, config) {
   // ---------- 百花服务运维（bh CLI）----------
   const bhOps = config.bhCommand ? createBhOps(config) : null;
 
+  // ---------- 观测：工具调用计数 + 耗时（结构化日志；计数经 /dsh-bridge/status 暴露） ----------
+  // 定义在 apply 作用域而非 registerBhTools 内：/dsh-bridge/status 的 handleStatus
+  // 也要引用 toolStats，函数内局部变量会导致 ReferenceError（writeHead 已发送后
+  // 抛错 → 连接被 destroy → Empty reply）。
+  const toolStats = { total: 0, failed: 0, byTool: {} };
+  const toolStarted = new WeakMap();
+
   // ---------- DSH 设置页命名空间（让「百花服务状态」卡片在 DSH UI 设置页渲染）----------
   // 仅注册命名空间供客户端卡片配对；卡片本体只读展示，不在此编辑配置。
   installSettingsSection(ctx, SETTINGS_NS, Config, config, {
@@ -371,10 +378,6 @@ export function apply(ctx, config) {
       return next();
     });
 
-    // ---------- 观测：工具调用计数 + 耗时（结构化日志；计数经 /dsh-bridge/status 暴露） ----------
-    // 注册在审批门之前（prepend），保证先记开始时间再进入后续流水线。
-    const toolStats = { total: 0, failed: 0, byTool: {} };
-    const toolStarted = new WeakMap();
     ctx.on(
       "tools/pre-execute",
       (exec, next) => {
