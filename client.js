@@ -54,7 +54,7 @@ window.__ModuleLoader__.load({
       const [err, setErr] = useState(null);
       const [busy, setBusy] = useState(false);
       const [msg, setMsg] = useState(null); // { ok, text } 操作结果提示
-      const [open, setOpen] = useState(true); // 开合：与内置卡片一致
+      const [open, setOpen] = useState(false); // 开合：默认收起，与内置卡片一致
       const [snap, setSnap] = useState(null);
       const [draft, setDraft] = useState({});
       const [saving, setSaving] = useState(false);
@@ -224,10 +224,8 @@ window.__ModuleLoader__.load({
               { style: { fontSize: 15, fontWeight: 600, lineHeight: 1.4, color: "var(--dsw-alias-label-primary)", flex: 1, minWidth: 0 } },
               "百花服务状态" + (summary ? `（${summary.ready}/${summary.total} 就绪）` : "") + headBadge
             ),
-            React.createElement(
-              "span",
-              { style: { color: "var(--dsw-alias-label-tertiary)", flex: "none", fontSize: 12, transition: "transform .16s", transform: open ? "rotate(180deg)" : "none" } },
-              "▾"
+            React.createElement("svg", { width: 14, height: 14, viewBox: "0 0 14 14", fill: "none", style: { color: "var(--dsw-alias-label-tertiary)", flex: "none", transition: "transform .16s", transform: open ? "rotate(180deg)" : "none" } },
+              React.createElement("path", { d: "M3 5.5L7 9.5L11 5.5", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" })
             )
           ),
           React.createElement(
