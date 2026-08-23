@@ -99,7 +99,17 @@ window.__ModuleLoader__.load({
       const services = data?.services ?? [];
       const summary = data?.summary;
       const git = data?.git;
-      const base = { fontFamily: "inherit", fontSize: 13, lineHeight: 1.6 };
+      const base = {
+        fontFamily: "inherit",
+        fontSize: 13,
+        lineHeight: 1.6,
+        // 与 DSH 内置插件卡片一致：边框 + 背景 + 圆角
+        border: "1px solid var(--dsw-alias-border-l2)",
+        background: "var(--dsw-alias-bg-layer-3)",
+        borderRadius: 14,
+        boxShadow: "0 2px 8px rgba(0,0,0,.14)",
+        padding: "14px 16px",
+      };
       const th = { textAlign: "left", padding: "2px 12px 2px 0", color: "#888", fontWeight: 600 };
       const td = { padding: "2px 12px 2px 0", whiteSpace: "nowrap" };
       const btn = {
