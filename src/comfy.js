@@ -22,7 +22,7 @@ export function createComfyClient(config) {
   const token = config.drawToken || "";
   const defaultModelType = normalizeModelType(config.comfyModelType || "z-image-turbo");
 
-  /** 绘图能力查询（ComfyUI 在线 + 支持图像/视频）。 */
+  /** 绘图能力查询（ComfyUI 在线 + 支持图像/视频）。返回的 detail 统一 camelCase 键。 */
   async function status(timeoutMs = 6000) {
     try {
       const ac = new AbortController();
@@ -34,7 +34,10 @@ export function createComfyClient(config) {
       clearTimeout(timer);
       if (!res.ok) return { ok: false, detail: `绘图网关 HTTP ${res.status}` };
       const j = await res.json();
-      return { ok: true, detail: j };
+      // 后端序列化为 PascalCase，统一转 camelCase 再返回（避免消费方大小写踩坑）
+      const cap = {};
+      for (const [k, v] of Object.entries(j)) cap[k[0].toLowerCase() + k.slice(1)] = v;
+      return { ok: true, detail: cap };
     } catch {
       return { ok: false, detail: "绘图网关不可达（检查 drawGatewayUrl 与目标百花是否在线）" };
     }
