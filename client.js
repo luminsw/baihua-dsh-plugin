@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
       const [err, setErr] = useState(null);
       const [busy, setBusy] = useState(false);
       const [msg, setMsg] = useState(null); // { ok, text } 操作结果提示
+      const [open, setOpen] = useState(true); // 开合：与内置卡片一致
 
       const load = useCallback(async () => {
         try {
@@ -132,42 +133,46 @@ window.__ModuleLoader__.load({
         { style: base },
         React.createElement(
           "div",
-          { style: { marginBottom: 6 } },
+          { style: { display: "flex", alignItems: "center", gap: 8 } },
           React.createElement(
-            "div",
-            { style: { display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 15 } },
+            "button",
+            {
+              type: "button",
+              style: { appearance: "none", display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, textAlign: "left", font: "inherit", color: "inherit", background: "transparent", border: "none", padding: 0, margin: 0, cursor: "pointer" },
+              "aria-expanded": open,
+              onClick: () => setOpen(!open),
+            },
             React.createElement(
               "span",
-              { style: { fontSize: 15, fontWeight: 600, lineHeight: 1.4, color: "var(--dsw-alias-label-primary)" } },
+              { style: { fontSize: 15, fontWeight: 600, lineHeight: 1.4, color: "var(--dsw-alias-label-primary)", flex: 1, minWidth: 0 } },
               "百花服务状态" + (summary ? `（${summary.ready}/${summary.total} 就绪）` : "") + headBadge
             ),
             React.createElement(
-              "button",
-              {
-                style: btn,
-                disabled: busy,
-                onClick: () => runAction("update"),
-                title: "一键更新：git pull + 编译变更镜像 + 部署；若编译因 NuGet 缓存损坏（NETSDK1064）失败会自动清理缓存重试",
-              },
-              "🔄一键更新"
-            ),
-            React.createElement(
-              "button",
-              {
-                style: btn,
-                disabled: busy,
-                onClick: () => openBaihua(setMsg),
-                title: "获取百花 cli-token 并打开 WebUI 首页（自动登录）",
-              },
-              "🌐打开百花"
+              "span",
+              { style: { color: "var(--dsw-alias-label-tertiary)", flex: "none", fontSize: 12, transition: "transform .16s", transform: open ? "rotate(180deg)" : "none" } },
+              "▾"
             )
           ),
           React.createElement(
-            "div",
-            { style: { fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)", marginTop: 2 } },
-            "百花 k8s 服务运行状态与版本对比，可启停/重启/编译各服务，或一键更新（编译失败自动清理缓存重试）。"
+            "button",
+            { style: btn, disabled: busy, onClick: () => runAction("update"), title: "一键更新：git pull + 编译变更镜像 + 部署；若编译因 NuGet 缓存损坏（NETSDK1064）失败会自动清理缓存重试" },
+            "🔄一键更新"
+          ),
+          React.createElement(
+            "button",
+            { style: btn, disabled: busy, onClick: () => openBaihua(setMsg), title: "获取百花 cli-token 并打开 WebUI 首页（自动登录）" },
+            "🌐打开百花"
           )
         ),
+        React.createElement(
+          "div",
+          { style: { fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)", marginTop: 2 } },
+          "百花 k8s 服务运行状态与版本对比，可启停/重启/编译各服务，或一键更新（编译失败自动清理缓存重试）。"
+        ),
+        open
+          ? React.createElement(
+              "div",
+              null,
         err
           ? React.createElement(
               "div",
@@ -270,6 +275,8 @@ window.__ModuleLoader__.load({
                   )
                   .join(" · ")
             )
+          : null
+              )
           : null
       );
     }
