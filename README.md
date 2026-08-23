@@ -16,12 +16,12 @@
 
 服务组成：`Baihua.Family`(8788) · `Baihua.AI`(8791) · `Baihua.Vault`(8790) · `Baihua.Web`(5177)。
 
-**定位：百花 = 能力提供方（算力池 / 本机模型 / 知识库 / 家庭数据），DSH（DeepSeek Harness）= 编排与交互面。** 本插件是这套生态里「百花 Web → DSH」的桥：百花页面把 AI 对话等消费型交互交给 DSH 智能体执行，同时把百花服务运维（`bh_*`）与数据（知识库/记账/任务）反哺给 DSH 的 agent。
+**定位：百花 = 能力提供方（算力池 / 本机模型 / 知识库 / 家庭数据），DSH（DeepSeek Harness）= 编排与交互面。** 本插件是这套生态里「百花 Web → DSH」的桥：百花页面把 AI 对话等消费型交互交给 DSH 智能体执行，同时把百花服务运维（`bh_*`）与绘图能力反哺给 DSH 的 agent；百花**数据**（知识库/记账/任务）统一走 `baihua-mcp-server`（工具名 `mcp__baihua__*`），本插件不再重复注册数据工具。
 
 同族插件（org `luminsw`，均已公开）：
 
 - [`baihua-local-ai-dsh-plugin`](https://github.com/luminsw/baihua-local-ai-dsh-plugin) — DSH → 百花本地 AI（探测 OVMS/shim，注册 `baihua-local` provider，`local_ai_small_task` 省线上 token）
-- [`baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server) — 百花 → 任意 MCP 客户端（标准 MCP 只读能力）
+- [`baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server) — 百花 → 任意 MCP 客户端（标准 MCP **只读数据能力**：知识库 / 记账 / 任务；DSH 内经 `mcp__baihua__*` 前缀接入）
 - [`hysteria-dsh-plugin`](https://github.com/luminsw/hysteria-dsh-plugin) — 本机 Hysteria 2 代理管理（开发网络兜底）
 
 部署与配置总文档见百花仓库 [`docs/DSH_INTEGRATION.md`](https://github.com/luminsw/baihua/blob/main/docs/DSH_INTEGRATION.md)。
@@ -44,7 +44,11 @@
 > 除 `/status` 外的所有接口受 `token` 配置保护（见下文「安全」）。`/dsh-bridge/bh/*`
 > 还会注册同名 DSH 工具（`bh_status` / `bh_start` / `bh_stop` / `bh_restart` /
 > `bh_build` / `bh_update` / `bh_logs` / `bh_op_status` / `bh_build_restart` /
-> `bh_git_commit_push` / `bh_bootstrap`），供 agent 直接调用。
+> `bh_git_commit_push` / `bh_dsh_restart` / `bh_bootstrap`）与绘图工具
+> （`baihua_draw` / `baihua_draw_video`），供 agent 直接调用。其中**变更类运维工具**
+> （start/stop/restart、build、update、git 提交推送、DSH 重启、引导安装）挂有
+> `tools/pre-execute` 审批门：审批策略为 `ask` 时在 DSH 界面弹出确认，为 `never` 时
+> 自动拒绝；只读工具（`bh_status` / `bh_logs` / `bh_op_status`）不受影响。
 
 ### 首次接入：没有百花源码也能自动下载（`bh_bootstrap`）
 
@@ -61,20 +65,24 @@
 
 插件启动时也会检测一次源码：缺失时打日志提示可用 `bh_bootstrap`，不阻塞启动。
 
-### 百花数据/能力工具（DSH 工具，agent 直接可用）
+### 百花绘图工具（DSH 工具，agent 直接可用）
 
 | 工具 | 说明 | 依赖配置 |
 |---|---|---|
-| `baihua_vault_search` / `baihua_vault_list` / `baihua_vault_read_note` | 知识库检索/列表/读笔记 | `vaultUrl` |
-| `baihua_budget_summary` / `baihua_tasks_list` | 家庭记账汇总 / 任务列表 | `familyUrl` |
-| `baihua_draw` | ComfyUI 出图（txt2img） | `comfyUrl` / `comfyCheckpoint` |
+| `baihua_draw` | 出图（txt2img，Z-Image-Turbo / SD1.5） | `drawGatewayUrl` / `drawToken` / `comfyModelType` / `comfyCheckpoint` |
+| `baihua_draw_video` | 出视频（txt2video，LTX Video） | `drawGatewayUrl` / `drawToken` |
 
-### 百花能力 MCP server（标准对外通道）
+绘图统一经百花算力池绘图网关（`/mg/pool/v1/draw/*`），`drawGatewayUrl` 指向任一百花
+节点（默认本机 `familyUrl`），跨机可用；文件下载走短时签名 URL。
 
-独立的 [`luminsw/baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server)
-仓库（`@modelcontextprotocol/sdk`，stdio），把上述**只读数据工具**按标准 MCP 暴露给任意
-MCP 客户端（DSH 经 `@deepseek-ai/dsh-mcp-client` 接入后工具名带 `mcp__baihua__` 前缀）。
-连接目标经 `BAIHUA_VAULT_URL` / `BAIHUA_FAMILY_URL` 环境变量配置（默认 127.0.0.1:8790/8788）。
+### 百花数据工具 → 统一走 `baihua-mcp-server`
+
+本插件**不再注册**知识库 / 记账 / 任务等数据工具。百花只读数据能力统一由独立的
+[`luminsw/baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server)
+仓库按标准 MCP（stdio）暴露给任意 MCP 客户端；DSH 内经 `@deepseek-ai/dsh-mcp-client`
+接入后工具名带 `mcp__baihua__` 前缀（`mcp__baihua__baihua_vault_search`、
+`mcp__baihua__baihua_budget_summary` 等）。连接目标经 `BAIHUA_VAULT_URL` /
+`BAIHUA_FAMILY_URL` 环境变量配置（默认 127.0.0.1:8790/8788）。
 
 ### DSH 设置页「百花服务状态」卡片（客户端插件）
 
@@ -113,10 +121,10 @@ webServer、免鉴权、只读；局域网桥不暴露此路由）。
   `lanListen`（如 `"0.0.0.0:3081"`）：插件会起一个**只暴露 `/dsh-bridge/*`** 的
   小服务（同样带 token 鉴权，其余路径一律 404），DSH 核心 webServer 仍只监听
   127.0.0.1，不会把 DSH 的远程执行界面暴露到网络。
-- 建议配置共享密钥 `token`（在 `cordis.patch.yml` 的插件 `config` 中设置）。
+- 建议配置共享密钥 `token`（在 `~/.dsh/cordis.patch.yml` 的插件 `config` 中设置）。
   启用后，除 `/status` 外的所有 HTTP 接口要求 `Authorization: Bearer <token>`
   或查询参数 `?token=<token>`；WebSocket 升级要求 `?token=<token>`。百花侧
-  通过 `DshApi:Token` 配置同步填入。**配置 `lanListen` 为非回环地址时必须设置 token**。
+  通过 `DshApi:Token` 配置同步填入同一密钥。**配置 `lanListen` 为非回环地址时必须设置 token**。
 - 本插件**不做**速率限制 / 审计。若需要，请在反向代理层补充。
 
 ## 安装与加载
@@ -138,15 +146,15 @@ dsh plugin --profile web add github:luminsw/baihua-dsh-plugin
 > （`dsh plugin` 会提示把包键加入该 profile 的 `pnpm-workspace.yaml` 的
 > `allowBuilds`，然后重新执行 `add`）。
 
-2) 如需鉴权，在用户级补丁 `~/.dsh/cordis.patch.yml` 的 `insert` 列表按 id 覆盖
-   该行配置（后应用的层按行胜出）：
+2) 如需鉴权，在用户级补丁 `~/.dsh/cordis.patch.yml` 里**按 id 覆盖 config**
+   （插件行由 bundle 自动插入，这里不要再 `insert` 同名行，避免重复）：
 
 ```yaml
-- insert:
-    # …… 已有的 MCP / 其他插件条目保持不变 ……
-    - id: dsh-baihua-bridge
-      config:
-        token: 'your-shared-secret'   # 可选；不设置则保持开放（仅限回环）
+- id: dsh-baihua-bridge
+  config:
+    token: 'your-shared-secret'   # 可选；不设置则保持开放（仅限回环）
+    drawGatewayUrl: 'http://127.0.0.1:8788'
+    drawToken: '<BAIHUA_AI_EXTERNAL_TOKEN>'
 ```
 
 3) 启动 DSH（`npx @deepseek-ai/dsh web` 或 `dsh web`），插件随 web profile

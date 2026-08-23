@@ -350,6 +350,30 @@ export function apply(ctx, config) {
 
   const registerBhTools = () => {
     if (!bhOps) return;
+    // ---------- 高危运维工具强制审批门（tools/pre-execute）----------
+    // bh_* 运维工具直接经 child_process 执行宿主机操作，不受文件沙箱约束；
+    // 对变更类工具挂 ask 门：审批策略为 ask 时在 DSH 界面弹出确认，为 never 时自动拒绝。
+    // 只读工具（bh_status / bh_logs / bh_op_status）不受影响。
+    const HIGH_RISK_TOOLS = new Set([
+      "bh_start",
+      "bh_stop",
+      "bh_restart",
+      "bh_build",
+      "bh_build_restart",
+      "bh_update",
+      "bh_git_commit_push",
+      "bh_dsh_restart",
+      "bh_bootstrap",
+    ]);
+    ctx.on("tools/pre-execute", (exec, next) => {
+      if (HIGH_RISK_TOOLS.has(exec.name)) {
+        return {
+          kind: "ask",
+          reason: `高危宿主机操作 ${exec.name}：需在 DSH 界面确认后执行`,
+        };
+      }
+      return next();
+    });
     const j = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
     ctx.tools.register(
       defineTool({
@@ -488,7 +512,8 @@ export function apply(ctx, config) {
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute(args) {
           const op = bhOps.startGitCommitPush(String(args.message ?? ""));
-          return op ? `已开始提交并推送（opId=${op.id}），用 bh_op_status 查询进度。` : `启动失败`;
+          if (op && op.ok === false) return `❌ ${op.error}`;
+          return `已开始提交并推送（opId=${op.id}），用 bh_op_status 查询进度。`;
         },
       }),
     );
@@ -673,7 +698,13 @@ export function apply(ctx, config) {
       if (action === "git-commit-push") {
         const msg = String(body?.message ?? body?.service ?? "");
         const op = bhOps.startGitCommitPush(msg);
-        return sendJson(res, 200, { ok: true, opId: op.id, action: "git-commit-push", service: msg });
+        return sendJson(
+          res,
+          op && op.ok === false ? 400 : 200,
+          op && op.ok === false
+            ? { ok: false, error: op.error }
+            : { ok: true, opId: op.id, action: "git-commit-push", service: msg },
+        );
       }
       if (["start", "stop", "restart"].includes(action)) {
         if (!service) return sendJson(res, 400, { ok: false, error: "缺少 service" });
@@ -760,7 +791,13 @@ export function apply(ctx, config) {
         if (action === "git-commit-push") {
           const msg = String(body?.message ?? body?.service ?? "");
           const op = bhOps.startGitCommitPush(msg);
-          return sendJson(res, 200, { ok: true, opId: op.id, action: "git-commit-push", service: msg });
+          return sendJson(
+            res,
+            op && op.ok === false ? 400 : 200,
+            op && op.ok === false
+              ? { ok: false, error: op.error }
+              : { ok: true, opId: op.id, action: "git-commit-push", service: msg },
+          );
         }
         if (bhOps.action && ["start", "stop", "restart"].includes(action)) {
           const r = bhOps.action(action, service);
