@@ -59,13 +59,13 @@ export const Config = z.object({
    * 也可显式配置，如 "~/src/baihua"）。
    */
   gitRepo: z.string().default(""),
-  /** 百花 Family 服务地址（绘图网关默认目标；默认本机回环，跨机填目标节点地址）。 */
-  familyUrl: z.string().default("http://127.0.0.1:8788"),
-  /** 百花 WebUI 服务地址（“打开百花”入口自动登录用；默认本机回环，k8s 部署填对外地址）。 */
-  webUrl: z.string().default("http://127.0.0.1:5177"),
-  /** ComfyUI 出图模型类型：z-image-turbo（默认）或 sd15。 */
-  comfyModelType: z.string().default("z-image-turbo"),
-  comfyCheckpoint: z.string().default("v1-5-pruned-emaonly.safetensors"),
+  /** 百花 Family 服务地址（绘图网关默认目标）。留空=从 /api/dsh/config 自举（零配置）。 */
+  familyUrl: z.string().default(""),
+  /** 百花 WebUI 服务地址（“打开百花”入口自动登录用）。留空=自举。 */
+  webUrl: z.string().default(""),
+  /** ComfyUI 出图模型类型：z-image-turbo（默认）或 sd15。留空=自举。 */
+  comfyModelType: z.string().default(""),
+  comfyCheckpoint: z.string().default(""),
   /** 百花算力池绘图网关（/mg/pool/v1/draw/* 所在 Family）。空 = 用 familyUrl。跨机时可指向任一百花节点。 */
   drawGatewayUrl: z.string().default(""),
   /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
@@ -206,7 +206,28 @@ export function apply(ctx, config) {
     setSource: (source) => { current = source; },
     onChange: () => {},
   });
-  const cfg = () => current();
+  // 零配置自举：从本机 /api/dsh/config 拉拓扑，仅填充「未显式设置」的服务地址/绘图网关/token。
+  // 用户显式配置（settings/patch）优先；自举作为兜底默认。
+  let bootstrap = {};
+  try {
+    const base = (current().familyUrl || "http://127.0.0.1").trim().replace(/\/+$/, "");
+    fetch(`${base}/api/dsh/config`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (j && j.ok) bootstrap = j; })
+      .catch(() => {});
+  } catch { /* noop */ }
+  const cfg = () => {
+    const c = current();
+    return {
+      ...c,
+      familyUrl: c.familyUrl || bootstrap.familyUrl || "http://127.0.0.1:8788",
+      webUrl: c.webUrl || bootstrap.webUrl || "",
+      drawGatewayUrl: c.drawGatewayUrl || bootstrap.drawGatewayUrl || bootstrap.poolUrl || "",
+      drawToken: c.drawToken || bootstrap.drawToken || "",
+      comfyModelType: c.comfyModelType || bootstrap.comfyModelType || "z-image-turbo",
+      comfyCheckpoint: c.comfyCheckpoint || bootstrap.comfyCheckpoint || "v1-5-pruned-emaonly.safetensors",
+    };
+  };
   const maxBufferedText = cfg().maxBufferedText;
 
   // ---------- 可选鉴权（token 动态读：设置页改了立即生效）----------
