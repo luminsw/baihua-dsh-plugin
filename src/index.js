@@ -590,6 +590,22 @@ export function apply(ctx, config) {
 
   // ---------- 百花绘图工具（经算力池绘图网关，支持跨机） ----------
   const comfy = createComfyClient(cfg);
+
+  // 跨机：按节点名解析绘图网关（/api/dsh/pool）。返回 { hostUrl } 或 {}。
+  async function resolveDrawNode(name) {
+    try {
+      const base = (cfg().familyUrl || "http://127.0.0.1").trim().replace(/\/+$/, "");
+      const res = await fetch(`${base}/api/dsh/pool`, { cache: "no-store" });
+      if (!res.ok) return {};
+      const j = await res.json();
+      const node = (j.nodes || []).find((n) => n.name === name);
+      if (!node || !node.hostUrl) return {};
+      return { hostUrl: node.hostUrl };
+    } catch {
+      return {};
+    }
+  }
+
   ctx.tools.register(
     defineTool({
       name: "baihua_draw_status",
@@ -633,9 +649,11 @@ export function apply(ctx, config) {
         unetName: { type: "string", description: "Z-Image-Turbo UNet 模型名（默认 z_image_turbo_bf16.safetensors）" },
         clipName: { type: "string", description: "Z-Image-Turbo CLIP 模型名（默认 qwen_3_4b.safetensors）" },
         vaeName: { type: "string", description: "Z-Image-Turbo VAE 模型名（默认 ae.safetensors）" },
+        target: { type: "string", description: "目标节点名（跨机调用指定百花节点的绘图；来自 /api/dsh/pool 的 name；留空用默认网关）" },
       },
       output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
       async execute(args) {
+        const gw = args.target ? await resolveDrawNode(String(args.target)) : {};
         const r = await comfy.generate({
           prompt: String(args.prompt),
           negativePrompt: String(args.negativePrompt ?? ""),
@@ -651,6 +669,7 @@ export function apply(ctx, config) {
           unetName: args.unetName ? String(args.unetName) : undefined,
           clipName: args.clipName ? String(args.clipName) : undefined,
           vaeName: args.vaeName ? String(args.vaeName) : undefined,
+          gatewayBase: gw.hostUrl,
         });
         if (!r.ok) return `❌ ${r.error}`;
         return (
@@ -677,9 +696,11 @@ export function apply(ctx, config) {
         cfg: { type: "number", description: "CFG 引导强度（默认 4）" },
         sampler: { type: "string", description: "采样器名（默认 euler）" },
         scheduler: { type: "string", description: "调度器名（默认 sgm_uniform）" },
+        target: { type: "string", description: "目标节点名（跨机调用指定百花节点的绘图；来自 /api/dsh/pool 的 name；留空用默认网关）" },
       },
       output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
       async execute(args) {
+        const gw = args.target ? await resolveDrawNode(String(args.target)) : {};
         const r = await comfy.generateVideo({
           prompt: String(args.prompt),
           negativePrompt: String(args.negativePrompt ?? ""),
@@ -692,6 +713,7 @@ export function apply(ctx, config) {
           cfg: args.cfg != null ? Number(args.cfg) : undefined,
           sampler: args.sampler ? String(args.sampler) : undefined,
           scheduler: args.scheduler ? String(args.scheduler) : undefined,
+          gatewayBase: gw.hostUrl,
         });
         if (!r.ok) return `❌ ${r.error}`;
         return (

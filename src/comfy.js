@@ -62,6 +62,8 @@ export function createComfyClient(config) {
     vaeName,
     modelType,
     timeoutMs = 300000,
+    gatewayBase,      // 跨机：指定目标节点网关（如 http://192.168.3.9:8788）
+    gatewayToken,     // 跨机：目标节点网关 token
   }) {
     const mt = normalizeModelType(modelType || defaultModelType());
     const isTurbo = mt === "z-image-turbo";
@@ -84,7 +86,7 @@ export function createComfyClient(config) {
       ...(clipName ? { clipName } : {}),
       ...(vaeName ? { vaeName } : {}),
     };
-    const r = await callGateway("/mg/pool/v1/draw/image", body, timeoutMs);
+    const r = await callGateway("/mg/pool/v1/draw/image", body, timeoutMs, { gatewayBase, gatewayToken });
     return r.ok ? { ...r, modelType: mt, width: w, height: h, steps: st } : r;
   }
 
@@ -103,6 +105,8 @@ export function createComfyClient(config) {
     scheduler,
     checkpoint,
     timeoutMs = 360000,
+    gatewayBase,
+    gatewayToken,
   }) {
     const body = {
       prompt,
@@ -118,15 +122,17 @@ export function createComfyClient(config) {
       ...(scheduler ? { scheduler } : {}),
       ...(checkpoint ? { checkpoint } : {}),
     };
-    return await callGateway("/mg/pool/v1/draw/video", body, timeoutMs);
+    return await callGateway("/mg/pool/v1/draw/video", body, timeoutMs, { gatewayBase, gatewayToken });
   }
 
-  async function callGateway(path, body, timeoutMs) {
+  async function callGateway(path, body, timeoutMs, gw = {}) {
     let res;
+    const base = (gw.gatewayBase || gatewayUrl()).replace(/\/+$/, "");
+    const tok = gw.gatewayToken !== undefined ? gw.gatewayToken : token();
     try {
-      res = await fetch(`${gatewayUrl()}${path}`, {
+      res = await fetch(`${base}${path}`, {
         method: "POST",
-        headers: headersFor(token()),
+        headers: headersFor(tok),
         body: JSON.stringify(body),
       });
     } catch (e) {
@@ -135,13 +141,13 @@ export function createComfyClient(config) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: `绘图网关失败（HTTP ${res.status}）：${JSON.stringify(data).slice(0, 300)}` };
     if (!data.Success) return { ok: false, error: data.Error || "生成失败", elapsedMs: (data.ElapsedSeconds ?? 0) * 1000 };
-    const url = data.FileUrl || `${gatewayUrl()}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
+    const url = data.FileUrl || `${base}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
     return {
       ok: true,
       // 输出文件统一叫 files（图片/视频通用，语义正确）
       files: [{ url, filename: data.FileName }],
       elapsedMs: (data.ElapsedSeconds ?? 0) * 1000,
-      gatewayUrl: gatewayUrl(),
+      gatewayUrl: base,
     };
   }
 
