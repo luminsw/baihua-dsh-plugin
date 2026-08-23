@@ -59,6 +59,17 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState({});
       const [saving, setSaving] = useState(false);
       const [saveMsg, setSaveMsg] = useState(null);
+      const [discovered, setDiscovered] = useState(null);
+
+      // 展示「已自动发现」的百花配置（只读：从本机 /api/dsh/config 拉取，零配置自举结果）
+      useEffect(() => {
+        (async () => {
+          try {
+            const res = await fetch("/api/dsh/config", { cache: "no-store" });
+            if (res.ok) setDiscovered(await res.json());
+          } catch { /* noop */ }
+        })();
+      }, []);
 
       const load = useCallback(async () => {
         try {
@@ -355,6 +366,16 @@ window.__ModuleLoader__.load({
           ? React.createElement(
               "div",
               { style: { marginTop: 10, borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 8 } },
+              discovered && discovered.ok
+                ? React.createElement("div", { style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 8, lineHeight: 1.6 } },
+                    React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 2 } }, "已自动发现（零配置自举）"),
+                    React.createElement("div", null, "Family: " + (discovered.familyUrl || "—")),
+                    React.createElement("div", null, "Vault: " + (discovered.vaultUrl || "—")),
+                    React.createElement("div", null, "AI: " + (discovered.aiUrl || "—")),
+                    React.createElement("div", null, "算力池: " + (discovered.poolUrl || "—")),
+                    React.createElement("div", null, "绘图: " + (discovered.drawGatewayUrl || "—"))
+                  )
+                : null,
               React.createElement("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", marginBottom: 4 } }, "参数配置" + (snap.status === "unavailable" ? "（当前不可编辑）" : "")),
               BAIHUA_FIELDS.map((f) => {
                 const val = draft[f.key];
