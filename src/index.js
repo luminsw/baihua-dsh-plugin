@@ -70,6 +70,12 @@ export const Config = z.object({
   drawGatewayUrl: z.string().default(""),
   /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
   drawToken: z.string().role("secret").default(""),
+  /**
+   * 高危运维工具白名单：名单内的工具（如 bh_build_restart / bh_build）会跳过
+   * tools/pre-execute 的 ask 审批门直接执行；不在名单内的高危操作仍走审批门。
+   * 空数组 = 全部仍走审批门（默认）。例：["bh_build_restart", "bh_build"]。
+   */
+  autoAllowOps: z.array(z.string()).default([]),
 });
 
 /** 从第一条用户消息抽取会话标题候选。 */
@@ -366,6 +372,16 @@ export function apply(ctx, config) {
   // ---------- 百花服务运维（bh CLI）----------
   const bhOps = config.bhCommand ? createBhOps(config) : null;
 
+  // ---------- 高危运维工具白名单放行 ----------
+  // 默认所有 HIGH_RISK_TOOLS 都要过 ask 审批门（当前会话审批提示禁用时会被自动拒绝）。
+  // 通过 config.autoAllowOps（工具名数组，来自 cordis.patch.yml 的 dsh-baihua-bridge.config）
+  // 显式放行信任的操作（如 bh_build_restart / bh_build / bh_git_commit_push），
+  // 这些工具将跳过审批门直接执行；不在名单内的高危操作仍走 ask 审批门。
+  const autoAllowOps = new Set(config.autoAllowOps ?? []);
+  if (autoAllowOps.size > 0) {
+    console.log(`[dsh-baihua-bridge] autoAllowOps=${[...autoAllowOps].join(", ")}`);
+  }
+
   // ---------- 观测：工具调用计数 + 耗时（结构化日志；计数经 /dsh-bridge/status 暴露） ----------
   // 定义在 apply 作用域而非 registerBhTools 内：/dsh-bridge/status 的 handleStatus
   // 也要引用 toolStats，函数内局部变量会导致 ReferenceError（writeHead 已发送后
@@ -393,7 +409,7 @@ export function apply(ctx, config) {
       "bh_bootstrap",
     ]);
     ctx.on("tools/pre-execute", (exec, next) => {
-      if (HIGH_RISK_TOOLS.has(exec.name)) {
+      if (HIGH_RISK_TOOLS.has(exec.name) && !autoAllowOps.has(exec.name)) {
         return {
           kind: "ask",
           reason: `高危宿主机操作 ${exec.name}：需在 DSH 界面确认后执行`,
