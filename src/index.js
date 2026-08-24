@@ -828,6 +828,9 @@ export function apply(ctx, config) {
       if (action === "dsh-restart") {
         return sendJson(res, 200, bhOps.restartDsh());
       }
+      if (action === "dsh-stop") {
+        return sendJson(res, 200, bhOps.stopDsh());
+      }
       if (action === "git-commit-push") {
         const msg = String(body?.message ?? body?.service ?? "");
         const op = bhOps.startGitCommitPush(msg);
@@ -920,6 +923,9 @@ export function apply(ctx, config) {
         const service = String(body?.service ?? "");
         if (action === "dsh-restart") {
           return sendJson(res, 200, bhOps.restartDsh());
+        }
+        if (action === "dsh-stop") {
+          return sendJson(res, 200, bhOps.stopDsh());
         }
         if (action === "git-commit-push") {
           const msg = String(body?.message ?? body?.service ?? "");
