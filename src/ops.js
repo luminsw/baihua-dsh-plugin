@@ -292,6 +292,7 @@ export function createBhOps(config) {
       action: "build-restart",
       service: service ?? "",
       startedAt: new Date().toISOString(),
+      finishedAt: null,
       running: true,
       exitCode: null,
       logPath,
@@ -345,6 +346,7 @@ export function createBhOps(config) {
       }
       if (buildCode !== 0) {
         entry.running = false;
+        entry.finishedAt = new Date().toISOString();
         entry.exitCode = buildCode;
         append(`\n[build-restart] 编译失败（exit ${buildCode}），已跳过重启。\n`);
         return;
@@ -357,6 +359,7 @@ export function createBhOps(config) {
         await run(["annotate", service], "打标注");
       }
       entry.running = false;
+      entry.finishedAt = new Date().toISOString();
       entry.exitCode = restartCode;
       append(`\n[build-restart] ${restartCode === 0 ? "完成 ✅" : "重启失败（exit " + restartCode + "）"}。\n`);
     })();
@@ -378,6 +381,7 @@ export function createBhOps(config) {
       action: "update",
       service: "",
       startedAt: new Date().toISOString(),
+      finishedAt: null,
       running: true,
       exitCode: null,
       logPath,
@@ -428,6 +432,7 @@ export function createBhOps(config) {
         if (code === 0) code = await run(["deploy"], "部署");
       }
       entry.running = false;
+      entry.finishedAt = new Date().toISOString();
       entry.exitCode = code;
       append(`\n[update] ${code === 0 ? "完成 ✅" : "失败（exit " + code + "）"}。\n`);
     })();
@@ -675,6 +680,7 @@ export function createBhOps(config) {
       action: "git-commit-push",
       service: message ?? "",
       startedAt: new Date().toISOString(),
+      finishedAt: null,
       running: true,
       exitCode: null,
       logPath,
@@ -774,6 +780,7 @@ export function createBhOps(config) {
         }
       } finally {
         entry.running = false;
+        entry.finishedAt = new Date().toISOString();
         append(`\n[git-commit-push] ${entry.exitCode === 0 ? "完成 ✅" : "失败（exit " + entry.exitCode + "）"}。\n`);
       }
     })();
@@ -796,6 +803,7 @@ export function createBhOps(config) {
       action: "bootstrap",
       service: o.url ?? "",
       startedAt: new Date().toISOString(),
+      finishedAt: null,
       running: true,
       exitCode: null,
       logPath,
@@ -898,6 +906,7 @@ export function createBhOps(config) {
         entry.result = { ok: false, error: e.message };
       } finally {
         entry.running = false;
+        entry.finishedAt = new Date().toISOString();
         append(`\n[bootstrap] ${entry.exitCode === 0 ? "完成 ✅" : "失败（exit " + entry.exitCode + "）"}。\n`);
       }
     })();
