@@ -171,6 +171,7 @@ export function createBhOps(config) {
       action,
       service: service ?? "",
       startedAt: new Date().toISOString(),
+      finishedAt: null,
       running: true,
       exitCode: null,
       logPath,
@@ -196,6 +197,7 @@ export function createBhOps(config) {
       entry.finalized = true;
       entry.running = false;
       entry.exitCode = code;
+      entry.finishedAt = new Date().toISOString();
       append(`\n[op] exit code: ${code}\n`);
       try {
         child.stdout?.destroy();
@@ -222,6 +224,10 @@ export function createBhOps(config) {
       action: op.action,
       service: op.service,
       startedAt: op.startedAt,
+      finishedAt: op.finishedAt ?? null,
+      durationMs: op.finishedAt
+        ? new Date(op.finishedAt).getTime() - new Date(op.startedAt).getTime()
+        : null,
       running: op.running,
       exitCode: op.exitCode,
       error: op.error ?? null,

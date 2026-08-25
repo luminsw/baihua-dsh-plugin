@@ -36,6 +36,19 @@ window.__ModuleLoader__.load({
     // 长操作（后台执行，返回 opId）
     const LONG_ACTIONS = ["build", "build-restart", "update", "up", "deploy"];
 
+    // 长操作耗时展示：ms → "42s" / "3m 12s" / "1h 5m"
+    const fmtDuration = (ms) => {
+      if (ms == null || ms < 0) return "";
+      const s = Math.round(ms / 1000);
+      if (s < 60) return s + "s";
+      const m = Math.floor(s / 60);
+      const rs = s % 60;
+      if (m < 60) return rs ? `${m}m ${rs}s` : `${m}m`;
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      return rm ? `${h}h ${rm}m` : `${h}h`;
+    };
+
     // 可配置字段（与 host Config 对齐；token/drawToken 为 write-only）。
     // 这些字段全部归入「高级设置」（默认折叠）：零配置自举下单机部署无需改任何一项。
     const BAIHUA_FIELDS = [
@@ -106,7 +119,7 @@ window.__ModuleLoader__.load({
         if (done) {
           setMsg({
             ok: done.exitCode === 0,
-            text: `${pendingOp.action}${pendingOp.service ? " " + pendingOp.service : ""} ${done.exitCode === 0 ? "✅ 已完成" : "❌ 失败"}`,
+            text: `${pendingOp.action}${pendingOp.service ? " " + pendingOp.service : ""} ${done.exitCode === 0 ? "✅ 已完成" : "❌ 失败"}${done.durationMs ? `（耗时 ${fmtDuration(done.durationMs)}）` : ""}`,
           });
           setPendingOp(null);
         }
@@ -425,7 +438,8 @@ window.__ModuleLoader__.load({
                     (op) =>
                       op.action +
                       (op.service ? " " + op.service : "") +
-                      (op.exitCode === 0 ? " ✅" : " ❌")
+                      (op.exitCode === 0 ? " ✅" : " ❌") +
+                      (op.durationMs ? ` ${fmtDuration(op.durationMs)}` : "")
                   )
                   .join(" · ")
             )
