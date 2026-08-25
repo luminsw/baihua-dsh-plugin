@@ -62,6 +62,7 @@ window.__ModuleLoader__.load({
       const [saveMsg, setSaveMsg] = useState(null);
       const [discovered, setDiscovered] = useState(null);
       const [showAdvanced, setShowAdvanced] = useState(false); // 「高级设置」开合：默认收起
+      const [pendingOp, setPendingOp] = useState(null); // { opId, action, service, at } 长操作跟踪，结束即清
 
       // 展示「已自动发现」的百花配置（只读：从本机 /api/dsh/config 拉取，零配置自举结果）
       useEffect(() => {
@@ -91,6 +92,26 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer);
       }, [load]);
 
+      // 长操作跟踪：update/build 等结束（从 runningOps 转入 recentOps）时，
+      // 把「后台执行中…」更新为完成/失败结果，避免操作结束后提示仍残留
+      useEffect(() => {
+        if (!pendingOp || !data) return;
+        // 兜底：45 分钟仍无结果（DSH 重启/op 记录被清理），清除一次性提示
+        if (Date.now() - pendingOp.at > 45 * 60 * 1000) {
+          setMsg(null);
+          setPendingOp(null);
+          return;
+        }
+        const done = (data.recentOps ?? []).find((o) => o.id === pendingOp.opId);
+        if (done) {
+          setMsg({
+            ok: done.exitCode === 0,
+            text: `${pendingOp.action}${pendingOp.service ? " " + pendingOp.service : ""} ${done.exitCode === 0 ? "✅ 已完成" : "❌ 失败"}`,
+          });
+          setPendingOp(null);
+        }
+      }, [data, pendingOp]);
+
       const runAction = useCallback(
         async (action, service, message) => {
           if (busy) return;
@@ -111,6 +132,7 @@ window.__ModuleLoader__.load({
             if (j.ok) {
               if (LONG_ACTIONS.includes(action)) {
                 setMsg({ ok: true, text: `已开始 ${action}${service ? " " + service : ""}（opId=${j.opId}），后台执行中…` });
+                setPendingOp({ opId: j.opId, action, service, at: Date.now() });
               } else {
                 setMsg({ ok: true, text: `${action} ${service} 成功` });
               }
