@@ -345,6 +345,11 @@ export function createBhOps(config) {
       }
       const restartArgs = ["restart", service];
       const restartCode = await run(restartArgs, "滚动重启");
+      // 重建镜像并滚动重启成功后，把 deployment 的 baihua.git-commit 标注同步为当前 HEAD，
+      // 避免 bh status 误报"落后"（deploy/update 会经 deploy_all 打标注，build-restart 不会）。
+      if (restartCode === 0) {
+        await run(["annotate", service], "打标注");
+      }
       entry.running = false;
       entry.exitCode = restartCode;
       append(`\n[build-restart] ${restartCode === 0 ? "完成 ✅" : "重启失败（exit " + restartCode + "）"}。\n`);
