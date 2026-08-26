@@ -36,10 +36,7 @@ export function createComfyClient(config) {
       clearTimeout(timer);
       if (!res.ok) return { ok: false, detail: `绘图网关 HTTP ${res.status}` };
       const j = await res.json();
-      // 后端序列化为 PascalCase，统一转 camelCase 再返回（避免消费方大小写踩坑）
-      const cap = {};
-      for (const [k, v] of Object.entries(j)) cap[k[0].toLowerCase() + k.slice(1)] = v;
-      return { ok: true, detail: cap };
+      return { ok: true, detail: j };
     } catch {
       return { ok: false, detail: "绘图网关不可达（检查 drawGatewayUrl 与目标百花是否在线）" };
     }
@@ -140,13 +137,13 @@ export function createComfyClient(config) {
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: `绘图网关失败（HTTP ${res.status}）：${JSON.stringify(data).slice(0, 300)}` };
-    if (!data.Success) return { ok: false, error: data.Error || "生成失败", elapsedMs: (data.ElapsedSeconds ?? 0) * 1000 };
-    const url = data.FileUrl || `${base}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.FileName || "")}`;
+    if (!data.success) return { ok: false, error: data.error || "生成失败", elapsedMs: (data.elapsedSeconds ?? 0) * 1000 };
+    const url = data.fileUrl || `${base}/mg/pool/v1/draw/file?filename=${encodeURIComponent(data.fileName || "")}`;
     return {
       ok: true,
       // 输出文件统一叫 files（图片/视频通用，语义正确）
-      files: [{ url, filename: data.FileName }],
-      elapsedMs: (data.ElapsedSeconds ?? 0) * 1000,
+      files: [{ url, filename: data.fileName }],
+      elapsedMs: (data.elapsedSeconds ?? 0) * 1000,
       gatewayUrl: base,
     };
   }
