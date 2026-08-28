@@ -16,12 +16,12 @@
 
 服务组成：`Baihua.Family`(8788) · `Baihua.AI`(8791) · `Baihua.Vault`(8790) · `Baihua.Web`(5177)。
 
-**定位：百花 = 能力提供方（算力池 / 本机模型 / 知识库 / 家庭数据），DSH（DeepSeek Harness）= 编排与交互面。** 本插件是这套生态里「百花 Web → DSH」的桥：百花页面把 AI 对话等消费型交互交给 DSH 智能体执行，同时把百花服务运维（`bh_*`）与绘图能力反哺给 DSH 的 agent；百花**数据**（知识库/记账/任务）统一走 `baihua-mcp-server`（工具名 `mcp__baihua__*`），本插件不再重复注册数据工具。
+**定位：百花 = 能力提供方（算力池 / 本机模型 / 知识库 / 家庭数据），DSH（DeepSeek Harness）= 编排与交互面。** 本插件是这套生态里「百花 Web → DSH」的桥：百花页面把 AI 对话等消费型交互交给 DSH 智能体执行，同时把百花服务运维（`bh_*`）与绘图能力反哺给 DSH 的 agent；百花**数据**（知识库/记账/任务）统一走 `Baihua.Family` 内置 `/mcp` 端点（工具名 `mcp__baihua__*`），本插件不再重复注册数据工具。
 
 同族插件（org `luminsw`，均已公开）：
 
 - [`baihua-local-ai-dsh-plugin`](https://github.com/luminsw/baihua-local-ai-dsh-plugin) — DSH → 百花本地 AI（探测 OVMS/shim，注册 `baihua-local` provider，`local_ai_small_task` 省线上 token）
-- [`baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server) — 百花 → 任意 MCP 客户端（标准 MCP **只读数据能力**：知识库 / 记账 / 任务；DSH 内经 `mcp__baihua__*` 前缀接入）
+
 - [`hysteria-dsh-plugin`](https://github.com/luminsw/hysteria-dsh-plugin) — 本机 Hysteria 2 代理管理（开发网络兜底）
 
 部署与配置总文档见百花仓库 [`docs/DSH_INTEGRATION.md`](https://github.com/luminsw/baihua/blob/main/docs/DSH_INTEGRATION.md)。
@@ -75,14 +75,12 @@
 绘图统一经百花算力池绘图网关（`/mg/pool/v1/draw/*`），`drawGatewayUrl` 指向任一百花
 节点（默认本机 `familyUrl`），跨机可用；文件下载走短时签名 URL。
 
-### 百花数据工具 → 统一走 `baihua-mcp-server`
+### 百花数据工具 → 统一走 `Baihua.Family` 内置 `/mcp` 端点
 
-本插件**不再注册**知识库 / 记账 / 任务等数据工具。百花只读数据能力统一由独立的
-[`luminsw/baihua-mcp-server`](https://github.com/luminsw/baihua-mcp-server)
-仓库按标准 MCP（stdio）暴露给任意 MCP 客户端；DSH 内经 `@deepseek-ai/dsh-mcp-client`
-接入后工具名带 `mcp__baihua__` 前缀（`mcp__baihua__baihua_vault_search`、
-`mcp__baihua__baihua_budget_summary` 等）。连接目标经 `BAIHUA_VAULT_URL` /
-`BAIHUA_FAMILY_URL` 环境变量配置（默认 127.0.0.1:8790/8788）。
+本插件**不再注册**知识库 / 记账 / 任务等数据工具。百花只读数据能力统一由 `Baihua.Family`
+内置 `/mcp` 端点（streamable-http，`ModelContextProtocol.AspNetCore`）暴露给任意 MCP 客户端；
+DSH 内经 `@deepseek-ai/dsh-mcp-client` 接入后工具名带 `mcp__baihua__` 前缀
+（`mcp__baihua__baihua_vault_search`、`mcp__baihua__baihua_budget_summary` 等）。
 
 ### DSH 设置页「百花服务状态」卡片（客户端插件）
 
