@@ -24,6 +24,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 import { settingsNamespace, installSettingsSection } from "@deepseek-ai/dsh-settings";
 import { createBhOps, detectRepoRoot } from "./ops.js";
 import { createComfyClient } from "./comfy.js";
+import { createMedicalClient } from "./medical.js";
 
 export const name = "dsh-baihua-bridge";
 
@@ -70,6 +71,10 @@ export const Config = z.object({
   drawGatewayUrl: z.string().default(""),
   /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
   drawToken: z.string().role("secret").default(""),
+  /** 家庭病历本工具开关（false 关闭）。 */
+  enableMedical: z.boolean().default(true),
+  /** 医疗管理 API 基地址（loopback-only）。留空 = http://127.0.0.1:8788。 */
+  medicalUrl: z.string().default(""),
   /**
    * 高危运维工具白名单：名单内的工具（如 bh_build_restart / bh_build）会跳过
    * tools/pre-execute 的 ask 审批门直接执行；不在名单内的高危操作仍走审批门。
@@ -760,6 +765,115 @@ export function apply(ctx, config) {
       },
     }),
   );
+
+  // ---------- 百花家庭病历本工具（loopback，可选） ----------
+  const registerMedicalTools = () => {
+    const medical = createMedicalClient(cfg);
+    const fmtMember = (m) => {
+      const parts = [`id=${m.id}`, m.name || "(未命名)"];
+      if (m.gender) parts.push(m.gender);
+      if (m.birthDate) parts.push(`出生 ${String(m.birthDate).slice(0, 10)}`);
+      if (Array.isArray(m.allergies) && m.allergies.length) parts.push(`过敏：${m.allergies.join("、")}`);
+      if (Array.isArray(m.chronicDiseases) && m.chronicDiseases.length) parts.push(`慢性病：${m.chronicDiseases.join("、")}`);
+      return parts.join("｜");
+    };
+
+    ctx.tools.register(
+      defineTool({
+        name: "baihua_medical_members",
+        description:
+          "列出百花家庭病历本中的全部家庭成员档案（姓名/性别/出生/过敏史/慢性病）。用于在诊断或落病历前确定 memberId。只读。",
+        parameters: {},
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute() {
+          const r = await medical.listMembers();
+          if (!r.ok) return `❌ ${r.error}`;
+          if (!r.members.length) return "（病历本为空，尚无家庭成员。可先调用 baihua_medical_member_create 创建。）";
+          return `家庭成员（${r.members.length} 人）：\n` + r.members.map((m) => `- ${fmtMember(m)}`).join("\n");
+        },
+      }),
+    );
+
+    ctx.tools.register(
+      defineTool({
+        name: "baihua_medical_member_create",
+        description:
+          "在百花家庭病历本中创建一位家庭成员档案（姓名必填；性别/出生日期/血型/过敏史/慢性病可选）。返回新成员的 id，供诊断与落病历使用。",
+        parameters: {
+          name: { type: "string", required: true, description: "姓名（去空格后 ≤50 字）" },
+          gender: { type: "string", description: "性别（男 / 女 / 未知）" },
+          birthDate: { type: "string", description: "出生日期（YYYY-MM-DD）" },
+          bloodType: { type: "string", description: "血型（A/B/AB/O/未知）" },
+          allergies: { type: "array", items: { type: "string" }, description: "过敏史条目（如“青霉素过敏”）" },
+          chronicDiseases: { type: "array", items: { type: "string" }, description: "慢性病/基础疾病条目（如“高血压”）" },
+          notes: { type: "string", description: "备注" },
+        },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const r = await medical.createMember({
+            name: String(args.name ?? ""),
+            gender: args.gender ? String(args.gender) : "",
+            birthDate: args.birthDate ? String(args.birthDate) : undefined,
+            bloodType: args.bloodType ? String(args.bloodType) : "",
+            allergies: Array.isArray(args.allergies) ? args.allergies.map(String) : [],
+            chronicDiseases: Array.isArray(args.chronicDiseases) ? args.chronicDiseases.map(String) : [],
+            notes: args.notes ? String(args.notes) : "",
+          });
+          if (!r.ok) return `❌ ${r.error}`;
+          return `✅ 已创建家庭成员 [id=${r.member.id}] ${r.member.name}`;
+        },
+      }),
+    );
+
+    ctx.tools.register(
+      defineTool({
+        name: "baihua_medical_record_save",
+        description:
+          "把一次中医辨证/就诊结果写入百花家庭病历本：症状、中医证型诊断、用药（方剂）与备注。用于沉淀「百花中医」给出的参考药方与调护，便于日后复诊与就医时陈述。memberId 需先经 baihua_medical_members 或 baihua_medical_member_create 取得。",
+        parameters: {
+          memberId: { type: "integer", required: true, description: "家庭成员 Id" },
+          title: { type: "string", required: true, description: "病历标题（如“感冒”“胃痛”）" },
+          symptoms: { type: "array", items: { type: "string" }, description: "症状列表" },
+          diagnoses: { type: "array", items: { type: "string" }, description: "诊断列表（中医证型、西医印象等）" },
+          medications: {
+            type: "array",
+            description: "用药/方剂条目",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                name: { type: "string", required: true, description: "药名/方名（必填）" },
+                dosage: { type: "string", description: "剂量（如“每剂 10g”）" },
+                frequency: { type: "string", description: "频次（如“每日 1 剂，水煎分 2 次”）" },
+                note: { type: "string", description: "备注（如“饭后服”“疗程 5 天”）" },
+              },
+            },
+          },
+          notes: { type: "string", description: "备注（就诊、调护、注意事项等）" },
+        },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const meds = (Array.isArray(args.medications) ? args.medications : []).map((m) => ({
+            name: String(m?.name ?? ""),
+            dosage: m?.dosage != null ? String(m.dosage) : undefined,
+            frequency: m?.frequency != null ? String(m.frequency) : undefined,
+            note: m?.note != null ? String(m.note) : undefined,
+          }));
+          const r = await medical.saveRecord({
+            memberId: Number(args.memberId),
+            title: String(args.title ?? ""),
+            symptoms: Array.isArray(args.symptoms) ? args.symptoms.map(String) : [],
+            diagnoses: Array.isArray(args.diagnoses) ? args.diagnoses.map(String) : [],
+            medications: meds,
+            notes: args.notes ? String(args.notes) : "",
+          });
+          if (!r.ok) return `❌ ${r.error}`;
+          return `✅ 已保存病历记录 [id=${r.record.id}]《${r.record.title}》到成员 ${r.record.memberId}`;
+        },
+      }),
+    );
+  };
+  if (config.enableMedical !== false) registerMedicalTools();
 
   // ---------- 百花服务运维 HTTP 端点（/dsh-bridge/bh/*，全部 token 鉴权） ----------
   function sendJson(res, code, obj) {

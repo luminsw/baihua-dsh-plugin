@@ -25,6 +25,10 @@ export interface BridgeConfig {
   drawGatewayUrl?: string;
   /** 绘图网关鉴权 token（BAIHUA_AI_EXTERNAL_TOKEN；本地回环且未设置时可不填）。 */
   drawToken?: string;
+  /** 家庭病历本 / 扁仓诊断工具开关（false 关闭）。 */
+  enableMedical?: boolean;
+  /** 医疗管理 API 基地址（loopback-only）。留空 = http://127.0.0.1:8788。 */
+  medicalUrl?: string;
 }
 
 /** 插件名（Cordis 约定）。 */
