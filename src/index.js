@@ -21,7 +21,6 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
-import { settingsNamespace, installSettingsSection } from "@deepseek-ai/dsh-settings";
 import { createBhOps, detectRepoRoot } from "./ops.js";
 import { createComfyClient } from "./comfy.js";
 import { createMedicalClient } from "./medical.js";
@@ -29,7 +28,7 @@ import { createMedicalClient } from "./medical.js";
 export const name = "dsh-baihua-bridge";
 
 /** DSH 设置页插件卡片命名空间（客户端卡片以同名 key 注册）。 */
-const SETTINGS_NS = settingsNamespace("baihua");
+const SETTINGS_NS = "baihua";
 
 export const inject = ["agents", "sessions", "webServer", "tools"];
 
@@ -213,9 +212,11 @@ export function apply(ctx, config) {
   const metas = [];
   // 设置页表单可改配置：setSource 重绑 current，运行时读最新值（修 setSource no-op bug）。
   let current = () => config;
-  installSettingsSection(ctx, SETTINGS_NS, Config, config, {
-    setSource: (source) => { current = source; },
-    onChange: () => {},
+  ctx.inject(["settings"], (settingsCtx) => {
+    settingsCtx.settings.installSection(ctx, SETTINGS_NS, Config, config, {
+      setSource: (source) => { current = source; },
+      onChange: () => {},
+    });
   });
   // 零配置自举：从本机 /api/dsh/config 拉拓扑，仅填充「未显式设置」的服务地址/绘图网关/token。
   // 用户显式配置（settings/patch）优先；自举作为兜底默认。
