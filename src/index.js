@@ -40,7 +40,7 @@ export const Config = z.object({
   /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的 provider 路由。 */
   fallbackProvider: z.string().default("deepseek-official"),
   /** agentDefaultModel 服务缺失（或尚未选择）时回退使用的模型。 */
-  fallbackModel: z.string().default("deepseek-v4-flash"),
+  fallbackModel: z.string().default("deepseek-flash"),
   /**
    * 可选：把桥接接口（/dsh-bridge/*）额外暴露到指定地址，如 "0.0.0.0:3081"。
    * 仅暴露桥接路由（带 token 鉴权），DSH 核心 webServer 仍只监听 127.0.0.1，
