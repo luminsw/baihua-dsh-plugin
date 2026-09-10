@@ -797,6 +797,50 @@ export function apply(ctx, config) {
 
     ctx.tools.register(
       defineTool({
+        name: "baihua_medical_member_get",
+        description:
+          "获取百花家庭病历本中一位家庭成员的完整档案（基本信息/过敏史/慢性病/身高体重/职业/生活起居/体质/运动损伤）+ 病历记录列表 + AI 诊断历史。用于诊断或复诊前调阅。memberId 需先经 baihua_medical_members 取得。只读。",
+        parameters: {
+          memberId: { type: "integer", required: true, description: "家庭成员 Id" },
+        },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const r = await medical.getMember(Number(args.memberId));
+          if (!r.ok) return `❌ ${r.error}`;
+          const d = r.detail || {};
+          const m = d.member || {};
+          const lines = [`【${fmtMember(m)}】`];
+          if (m.bloodType) lines.push(`血型：${m.bloodType}`);
+          if (m.heightCm != null) lines.push(`身高：${m.heightCm} cm`);
+          if (m.weightKg != null) lines.push(`体重：${m.weightKg} kg`);
+          if (m.occupation) lines.push(`职业：${m.occupation}`);
+          if (m.lifeHabits) lines.push(`生活起居：${m.lifeHabits}`);
+          if (Array.isArray(m.sportsInjuries) && m.sportsInjuries.length) lines.push(`运动损伤：${m.sportsInjuries.join("、")}`);
+          if (m.constitution) {
+            const c = m.constitution;
+            const cp = [c.primary, c.secondary].filter(Boolean).join(" / ");
+            lines.push(`体质：${cp || "未标注"}${c.note ? `（${c.note}）` : ""}`);
+          }
+          if (m.notes) lines.push(`备注：${m.notes}`);
+
+          const records = Array.isArray(d.records) ? d.records : [];
+          if (records.length) {
+            lines.push(`\n病历记录（${records.length} 条）：`);
+            for (const rec of records) {
+              const sym = Array.isArray(rec.symptoms) ? rec.symptoms.join("、") : "";
+              const diag = Array.isArray(rec.diagnoses) ? rec.diagnoses.join("、") : "";
+              lines.push(`- [id=${rec.id}] ${String(rec.occurredAt || "").slice(0, 10)}《${rec.title}》${sym ? ` 症状：${sym}` : ""}${diag ? ` 诊断：${diag}` : ""}`);
+            }
+          }
+          const diags = Array.isArray(d.diagnoses) ? d.diagnoses : [];
+          if (diags.length) lines.push(`\nAI 诊断历史（${diags.length} 条）`);
+          return lines.join("\n");
+        },
+      }),
+    );
+
+    ctx.tools.register(
+      defineTool({
         name: "baihua_medical_member_create",
         description:
           "在百花家庭病历本中创建一位家庭成员档案（姓名必填；性别/出生日期/血型/过敏史/慢性病可选）。返回新成员的 id，供诊断与落病历使用。",
@@ -808,6 +852,12 @@ export function apply(ctx, config) {
           allergies: { type: "array", items: { type: "string" }, description: "过敏史条目（如“青霉素过敏”）" },
           chronicDiseases: { type: "array", items: { type: "string" }, description: "慢性病/基础疾病条目（如“高血压”）" },
           notes: { type: "string", description: "备注" },
+          heightCm: { type: "number", description: "身高（cm）" },
+          weightKg: { type: "number", description: "体重（kg）" },
+          occupation: { type: "string", description: "职业" },
+          lifeHabits: { type: "string", description: "生活起居习惯（饮食/作息/运动等）" },
+          sportsInjuries: { type: "array", items: { type: "string" }, description: "运动损伤史条目（如“踝关节扭伤”）" },
+          constitution: { type: "object", description: "中医体质画像 { primary, secondary, note }", additionalProperties: true },
         },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute(args) {
@@ -819,6 +869,12 @@ export function apply(ctx, config) {
             allergies: Array.isArray(args.allergies) ? args.allergies.map(String) : [],
             chronicDiseases: Array.isArray(args.chronicDiseases) ? args.chronicDiseases.map(String) : [],
             notes: args.notes ? String(args.notes) : "",
+            heightCm: args.heightCm != null ? Number(args.heightCm) : undefined,
+            weightKg: args.weightKg != null ? Number(args.weightKg) : undefined,
+            occupation: args.occupation ? String(args.occupation) : undefined,
+            lifeHabits: args.lifeHabits ? String(args.lifeHabits) : undefined,
+            sportsInjuries: Array.isArray(args.sportsInjuries) ? args.sportsInjuries.map(String) : [],
+            constitution: args.constitution && typeof args.constitution === "object" ? args.constitution : undefined,
           });
           if (!r.ok) return `❌ ${r.error}`;
           return `✅ 已创建家庭成员 [id=${r.member.id}] ${r.member.name}`;
@@ -847,10 +903,28 @@ export function apply(ctx, config) {
                 dosage: { type: "string", description: "剂量（如“每剂 10g”）" },
                 frequency: { type: "string", description: "频次（如“每日 1 剂，水煎分 2 次”）" },
                 note: { type: "string", description: "备注（如“饭后服”“疗程 5 天”）" },
+                ingredients: {
+                  type: "array",
+                  description: "方剂组成（单味药列表）",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      name: { type: "string", required: true, description: "单味药名（必填）" },
+                      dosage: { type: "string", description: "剂量（如“10g”）" },
+                      note: { type: "string", description: "备注（如“后下”“包煎”）" },
+                    },
+                  },
+                },
+                decoctionMethod: { type: "string", description: "煎服方法（如“水煎分 2 次温服”）" },
+                principle: { type: "string", description: "方义/治法（如“疏风散寒”）" },
+                course: { type: "string", description: "疗程（如“5 天”）" },
+                effect: { type: "string", description: "功效（如“发汗解表”）" },
               },
             },
           },
           notes: { type: "string", description: "备注（就诊、调护、注意事项等）" },
+          fourDiagnostics: { type: "object", description: "四诊结构化 { tongue:{color,shape,coatingColor,coatingThickness,coatingTexture,sublingual,note}, pulse:{rate,rhythm,depth,strength,quality,position,note}, coldHeat, sweat, thirst, urine, stool, sleep, appetite, note }", additionalProperties: true },
         },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute(args) {
@@ -859,6 +933,17 @@ export function apply(ctx, config) {
             dosage: m?.dosage != null ? String(m.dosage) : undefined,
             frequency: m?.frequency != null ? String(m.frequency) : undefined,
             note: m?.note != null ? String(m.note) : undefined,
+            ingredients: Array.isArray(m?.ingredients)
+              ? m.ingredients.map((i) => ({
+                  name: String(i?.name ?? ""),
+                  dosage: i?.dosage != null ? String(i.dosage) : undefined,
+                  note: i?.note != null ? String(i.note) : undefined,
+                }))
+              : undefined,
+            decoctionMethod: m?.decoctionMethod != null ? String(m.decoctionMethod) : undefined,
+            principle: m?.principle != null ? String(m.principle) : undefined,
+            course: m?.course != null ? String(m.course) : undefined,
+            effect: m?.effect != null ? String(m.effect) : undefined,
           }));
           const r = await medical.saveRecord({
             memberId: Number(args.memberId),
@@ -867,9 +952,36 @@ export function apply(ctx, config) {
             diagnoses: Array.isArray(args.diagnoses) ? args.diagnoses.map(String) : [],
             medications: meds,
             notes: args.notes ? String(args.notes) : "",
+            fourDiagnostics: args.fourDiagnostics && typeof args.fourDiagnostics === "object" ? args.fourDiagnostics : undefined,
           });
           if (!r.ok) return `❌ ${r.error}`;
           return `✅ 已保存病历记录 [id=${r.record.id}]《${r.record.title}》到成员 ${r.record.memberId}`;
+        },
+      }),
+    );
+
+    ctx.tools.register(
+      defineTool({
+        name: "baihua_medical_record_search",
+        description:
+          "按关键词检索百花家庭病历本中的病历记录（标题/症状/诊断/用药/四诊/备注，不区分大小写）。用于查找既往相关病史。q 必填，limit 可选（默认 50，最大 200）。只读。",
+        parameters: {
+          q: { type: "string", required: true, description: "检索关键词（如“头痛”“感冒”）" },
+          limit: { type: "integer", description: "返回条数上限（默认 50，最大 200）" },
+        },
+        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
+        async execute(args) {
+          const q = String(args.q ?? "").trim();
+          if (!q) return "❌ q 不能为空";
+          const r = await medical.searchRecords(q, args.limit != null ? Number(args.limit) : 50);
+          if (!r.ok) return `❌ ${r.error}`;
+          if (!r.records.length) return `未检索到与「${q}」相关的病历记录。`;
+          return `检索「${q}」命中 ${r.records.length} 条：\n` + r.records.map((rec) => {
+            const sym = Array.isArray(rec.symptoms) ? rec.symptoms.join("、") : "";
+            const diag = Array.isArray(rec.diagnoses) ? rec.diagnoses.join("、") : "";
+            const meds = Array.isArray(rec.medications) ? rec.medications.map((x) => x.name).filter(Boolean).join("、") : "";
+            return `- [id=${rec.id}] 成员 ${rec.memberId}｜${String(rec.occurredAt || "").slice(0, 10)}《${rec.title}》${sym ? ` 症状：${sym}` : ""}${diag ? ` 诊断：${diag}` : ""}${meds ? ` 用药：${meds}` : ""}`;
+          }).join("\n");
         },
       }),
     );

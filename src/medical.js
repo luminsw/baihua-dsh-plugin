@@ -37,7 +37,12 @@ export function createMedicalClient(config) {
   }
 
   function errorOf(r, fallback) {
-    const e = r.data && (r.data.error || r.data.title || r.data.message);
+    const d = r.data || {};
+    let e = d.error ?? d.title ?? d.detail ?? "";
+    if (typeof e !== "string" || !e) {
+      const m = d.message;
+      e = m && typeof m === "object" ? (m.value || m.name || "") : (typeof m === "string" ? m : "");
+    }
     return `${fallback}（HTTP ${r.status}${e ? "：" + e : ""}）`;
   }
 
@@ -49,7 +54,7 @@ export function createMedicalClient(config) {
   }
 
   /** POST /api/medical/members —— 创建成员档案。 */
-  async function createMember({ name, gender = "", birthDate, bloodType = "", allergies = [], chronicDiseases = [], notes = "" }) {
+  async function createMember({ name, gender = "", birthDate, bloodType = "", allergies = [], chronicDiseases = [], notes = "", heightCm, weightKg, occupation, lifeHabits, sportsInjuries = [], constitution }) {
     const r = await call("/api/medical/members", {
       method: "POST",
       body: {
@@ -60,6 +65,12 @@ export function createMedicalClient(config) {
         allergies: Array.isArray(allergies) ? allergies : [],
         chronicDiseases: Array.isArray(chronicDiseases) ? chronicDiseases : [],
         notes,
+        heightCm: heightCm != null ? Number(heightCm) : undefined,
+        weightKg: weightKg != null ? Number(weightKg) : undefined,
+        occupation: occupation ? String(occupation) : undefined,
+        lifeHabits: lifeHabits ? String(lifeHabits) : undefined,
+        sportsInjuries: Array.isArray(sportsInjuries) ? sportsInjuries : [],
+        constitution: constitution && typeof constitution === "object" ? constitution : undefined,
       },
     });
     if (!r.ok) return { ok: false, error: errorOf(r, "创建成员失败") };
@@ -67,7 +78,7 @@ export function createMedicalClient(config) {
   }
 
   /** POST /api/medical/members/{memberId}/records —— 写入一条病历记录。 */
-  async function saveRecord({ memberId, title, symptoms = [], diagnoses = [], medications = [], notes = "" }) {
+  async function saveRecord({ memberId, title, symptoms = [], diagnoses = [], medications = [], notes = "", fourDiagnostics }) {
     const r = await call(`/api/medical/members/${Number(memberId)}/records`, {
       method: "POST",
       body: {
@@ -76,11 +87,27 @@ export function createMedicalClient(config) {
         diagnoses: Array.isArray(diagnoses) ? diagnoses : [],
         medications: Array.isArray(medications) ? medications : [],
         notes,
+        fourDiagnostics: fourDiagnostics && typeof fourDiagnostics === "object" ? fourDiagnostics : undefined,
       },
     });
     if (!r.ok) return { ok: false, error: errorOf(r, "保存病历失败") };
     return { ok: true, record: r.data };
   }
 
-  return { listMembers, createMember, saveRecord, baseUrl: baseUrl() };
+  /** GET /api/medical/members/{memberId} —— 成员详情（档案 + 病历记录 + AI 诊断历史）。 */
+  async function getMember(memberId) {
+    const r = await call(`/api/medical/members/${Number(memberId)}`);
+    if (!r.ok) return { ok: false, error: errorOf(r, "获取成员失败") };
+    return { ok: true, detail: r.data || {} };
+  }
+
+  /** GET /api/medical/records/search —— 按关键词检索病历记录。 */
+  async function searchRecords(q, limit = 50) {
+    const qs = `q=${encodeURIComponent(String(q ?? ""))}&limit=${Number(limit) || 50}`;
+    const r = await call(`/api/medical/records/search?${qs}`);
+    if (!r.ok) return { ok: false, error: errorOf(r, "检索病历失败") };
+    return { ok: true, records: Array.isArray(r.data) ? r.data : [] };
+  }
+
+  return { listMembers, createMember, saveRecord, getMember, searchRecords, baseUrl: baseUrl() };
 }
