@@ -59,7 +59,11 @@ export const Config = z.object({
    * 也可显式配置，如 "~/src/baihua"）。
    */
   gitRepo: z.string().default(""),
-  /** 百花 Family 服务地址（绘图网关默认目标）。留空=从 /api/dsh/config 自举（零配置）。 */
+  /**
+   * 百花后端服务地址（绘图网关默认目标）。留空=从 /api/dsh/config 自举（零配置）。
+   * 注意：三服务合一 + 全容器化后，宿主机只暴露 Traefik :80（8788/5177 只在集群内），
+   * 所以这里应写 http://127.0.0.1 或 http://<宿主IP>（不带端口）。
+   */
   familyUrl: z.string().default(""),
   /** 百花 WebUI 服务地址（“打开百花”入口自动登录用）。留空=自举。 */
   webUrl: z.string().default(""),
@@ -72,7 +76,7 @@ export const Config = z.object({
   drawToken: z.string().role("secret").default(""),
   /** 家庭病历本工具开关（false 关闭）。 */
   enableMedical: z.boolean().default(true),
-  /** 医疗管理 API 基地址（loopback-only）。留空 = http://127.0.0.1:8788。 */
+  /** 医疗管理 API 基地址。留空 = 自举的 familyUrl（即 http://127.0.0.1，Traefik :80）。 */
   medicalUrl: z.string().default(""),
   /**
    * 高危运维工具白名单：名单内的工具（如 bh_build_restart / bh_build）会跳过
@@ -230,11 +234,15 @@ export function apply(ctx, config) {
   } catch { /* noop */ }
   const cfg = () => {
     const c = current();
+    // 兜底一律用 Traefik :80 入口（宿主机上 8788/5177 已不再监听；
+    // 自举成功时 bootstrap.* 会给出真实地址，这里只是自举失败时的最后兜底）。
+    const hostFallback = "http://127.0.0.1";
     return {
       ...c,
-      familyUrl: c.familyUrl || bootstrap.familyUrl || "http://127.0.0.1:8788",
+      familyUrl: c.familyUrl || bootstrap.familyUrl || hostFallback,
+      medicalUrl: c.medicalUrl || bootstrap.familyUrl || hostFallback,
       webUrl: c.webUrl || bootstrap.webUrl || "",
-      drawGatewayUrl: c.drawGatewayUrl || bootstrap.drawGatewayUrl || bootstrap.poolUrl || "",
+      drawGatewayUrl: c.drawGatewayUrl || bootstrap.drawGatewayUrl || bootstrap.poolUrl || hostFallback,
       drawToken: c.drawToken || bootstrap.drawToken || "",
       comfyModelType: c.comfyModelType || bootstrap.comfyModelType || "z-image-turbo",
       comfyCheckpoint: c.comfyCheckpoint || bootstrap.comfyCheckpoint || "v1-5-pruned-emaonly.safetensors",
@@ -451,7 +459,7 @@ export function apply(ctx, config) {
       defineTool({
         name: "bh_status",
         description:
-          "查询百花服务的运行状态（family/ai/vault/webui/openvino/postgres 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。包含源码版本对比：git.head（当前仓库 HEAD）与各服务 imageCommit（部署时记录的 commit），upToDate 为 false 说明该服务运行的不是当前 HEAD 构建的镜像（需 bh_build_restart 或 bh_update）。宿主机运维工具，只读。",
+          "查询百花服务的运行状态（server/webui/openvino/postgres 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。包含源码版本对比：git.head（当前仓库 HEAD）与各服务 imageCommit（部署时记录的 commit），upToDate 为 false 说明该服务运行的不是当前 HEAD 构建的镜像（需 bh_build_restart 或 bh_update）。宿主机运维工具，只读。",
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute() {
@@ -482,8 +490,8 @@ export function apply(ctx, config) {
       ctx.tools.register(
         defineTool({
           name: `bh_${name}`,
-          description: `对百花某个服务执行 ${name}（family/ai/vault/webui/openvino/postgres，可省略 bh- 前缀）。宿主机运维操作，执行前请先向用户确认。`,
-          parameters: { service: { type: "string", required: true, description: "服务名，如 family / ai / webui" } },
+          description: `对百花某个服务执行 ${name}（server/webui/openvino/postgres，可省略 bh- 前缀）。宿主机运维操作，执行前请先向用户确认。`,
+          parameters: { service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres" } },
           output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
           async execute(args) {
             const r = bhOps.action(name, String(args.service));
@@ -496,7 +504,7 @@ export function apply(ctx, config) {
       defineTool({
         name: "bh_build_restart",
         description:
-          "编译并重启百花某个服务（编译成功 exit 0 后自动滚动重启，一次操作完成）。参数 service 为 family/ai/vault/webui/openvino/postgres。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
+          "编译并重启百花某个服务（编译成功 exit 0 后自动滚动重启，一次操作完成）。参数 service 为 server/webui/openvino（postgres 是上游镜像，不由本仓库构建）。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
         parameters: { service: { type: "string", required: true, description: "要编译并重启的服务" } },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute(args) {
@@ -538,9 +546,9 @@ export function apply(ctx, config) {
     ctx.tools.register(
       defineTool({
         name: "bh_logs",
-        description: "查看百花某个服务的最近日志（默认 50 行，最多 500）。参数 service 如 family/ai/webui。",
+        description: "查看百花某个服务的最近日志（默认 50 行，最多 500）。参数 service 如 server/webui/openvino/postgres。",
         parameters: {
-          service: { type: "string", required: true, description: "服务名，如 family / ai / webui" },
+          service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres" },
           lines: { type: "integer", description: "行数（默认 50）" },
         },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
@@ -1090,7 +1098,8 @@ export function apply(ctx, config) {
   function handleOpenBaihua(req, res) {
     if (req.method !== "GET") return sendJson(res, 405, { ok: false, error: "method not allowed" });
     if (!sameOriginRequest(req)) return sendJson(res, 403, { ok: false, error: "仅允许 DSH 页面同源调用" });
-    const base = String(cfg().webUrl || "http://127.0.0.1:5177").trim().replace(/\/+$/, "");
+    // 兜底走统一入口 :80（WebUI 也在 Traefik 后面；5177 仅集群内）
+    const base = String(cfg().webUrl || "http://127.0.0.1").trim().replace(/\/+$/, "");
     if (!base) return sendJson(res, 400, { ok: false, error: "webUrl 未配置" });
     void (async () => {
       try {

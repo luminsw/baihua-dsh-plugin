@@ -1,8 +1,8 @@
 /**
  * comfy.js — 绘图客户端（经百花算力池绘图网关）。
  *
- * 不再直连本机 ComfyUI：由目标百花机器的 Family 网关（/mg/pool/v1/draw/*）代调本地 ComfyUI，
- * 从而支持跨机互调（本机 DSH 默认走本机 family；配了 drawGatewayUrl 则调用对应百花节点）。
+ * 不再直连本机 ComfyUI：由目标百花节点的绘图网关（/mg/pool/v1/draw/*）代调本地 ComfyUI，
+ * 从而支持跨机互调（本机 DSH 默认走本机百花入口 http://127.0.0.1；配了 drawGatewayUrl 则调用对应节点）。
  * 支持文生图（txt2img）与文生视频（txt2video，LTX）。
  */
 
@@ -19,7 +19,7 @@ function headersFor(token) {
 export function createComfyClient(config) {
   // 支持传 config 对象或 getter（设置页表单改了即时生效）
   const cfg = () => (typeof config === "function" ? config() : config);
-  const gatewayUrl = () => (cfg().drawGatewayUrl || cfg().familyUrl || "http://127.0.0.1:8788")
+  const gatewayUrl = () => (cfg().drawGatewayUrl || cfg().familyUrl || "http://127.0.0.1")
     .trim().replace(/\/+$/, "");
   const token = () => cfg().drawToken || "";
   const defaultModelType = () => normalizeModelType(cfg().comfyModelType || "z-image-turbo");
@@ -59,7 +59,7 @@ export function createComfyClient(config) {
     vaeName,
     modelType,
     timeoutMs = 300000,
-    gatewayBase,      // 跨机：指定目标节点网关（如 http://192.168.3.9:8788）
+    gatewayBase,      // 跨机：指定目标节点网关（如 http://192.168.3.9，入口 :80，不带端口）
     gatewayToken,     // 跨机：目标节点网关 token
   }) {
     const mt = normalizeModelType(modelType || defaultModelType());

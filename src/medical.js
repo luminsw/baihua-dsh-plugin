@@ -1,8 +1,9 @@
 /**
- * medical.js — 百花家庭病历本客户端（经 Baihua.Family 管理 API /api/medical/*）。
+ * medical.js — 百花家庭病历本客户端（经 Baihua.Server 管理 API /api/medical/*）。
  *
- * 医疗 API 是「非公开路径、仅允许 loopback 访问」的管理接口，无需额外 token，
- * 因此默认直连本机 http://127.0.0.1:8788；配置 medicalUrl 可覆盖（仅同机 loopback 有效）。
+ * 医疗 API 是「非公开路径」的管理接口（无独立 token），默认走本机百花入口
+ * http://127.0.0.1（Traefik :80；三服务合一 + 全容器化后宿主机不再监听 8788）。
+ * 配置 medicalUrl 可覆盖（跨机时填目标百花的入口地址）。
  */
 
 function headersFor() {
@@ -12,7 +13,7 @@ function headersFor() {
 export function createMedicalClient(config) {
   // 支持传 config 对象或 getter（设置页表单改了即时生效）
   const cfg = () => (typeof config === "function" ? config() : config);
-  const baseUrl = () => (cfg().medicalUrl || "http://127.0.0.1:8788").trim().replace(/\/+$/, "");
+  const baseUrl = () => (cfg().medicalUrl || "http://127.0.0.1").trim().replace(/\/+$/, "");
 
   async function call(path, { method = "GET", body } = {}, timeoutMs = 60000) {
     let res;
@@ -24,7 +25,7 @@ export function createMedicalClient(config) {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
-      return { ok: false, error: "百花 Family 不可达（检查百花是否在线，或 medicalUrl 配置）" };
+      return { ok: false, error: "百花 Server 不可达（检查百花是否在线，或 medicalUrl 配置）" };
     }
     const text = await res.text().catch(() => "");
     let data = {};

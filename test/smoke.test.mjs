@@ -3,7 +3,7 @@
  * 覆盖：
  *  - ops.detectRepoRoot / startGitCommitPush 快速失败路径（不执行真实 git 变更）
  *  - comfy.js 高级参数透传与 files 字段语义（mock 网关）
- *  - comfy.js capabilities camelCase 归一化
+ *  - comfy.js capabilities camelCase 字段读取
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -46,7 +46,8 @@ test("comfy.generate 高级参数透传 + files 字段语义", async () => {
     req.on("end", () => {
       received = JSON.parse(body);
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ Success: true, FileName: "out.png", ElapsedSeconds: 1.5, FileUrl: "http://x/out.png" }));
+      // 绘图网关（Baihua 后端）响应一律 camelCase（仓库约定），mock 与真实响应对齐
+      res.end(JSON.stringify({ success: true, fileName: "out.png", elapsedSeconds: 1.5, fileUrl: "http://x/out.png" }));
     });
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
@@ -84,7 +85,7 @@ test("comfy.generateVideo 高级参数透传 + files 字段", async () => {
     req.on("end", () => {
       received = JSON.parse(body);
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ Success: true, FileName: "out.mp4", ElapsedSeconds: 2, FileUrl: "http://x/out.mp4" }));
+      res.end(JSON.stringify({ success: true, fileName: "out.mp4", elapsedSeconds: 2, fileUrl: "http://x/out.mp4" }));
     });
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
@@ -102,10 +103,11 @@ test("comfy.generateVideo 高级参数透传 + files 字段", async () => {
   }
 });
 
-test("comfy.status 将后端 PascalCase 归一化为 camelCase", async () => {
+test("comfy.status 直接读网关 camelCase 字段", async () => {
   const srv = http.createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ComfyOnline: true, Image: true, Video: true, UnetModels: ["z_image_turbo_bf16.safetensors"], ClipModels: [], VaeModels: [] }));
+    // 真实网关（/mg/pool/v1/draw/capabilities）返回 camelCase，源码不做 PascalCase 归一化
+    res.end(JSON.stringify({ comfyOnline: true, image: true, video: true, unetModels: ["z_image_turbo_bf16.safetensors"], clipModels: [], vaeModels: [] }));
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const port = srv.address().port;

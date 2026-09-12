@@ -275,7 +275,7 @@ export function createBhOps(config) {
   /** 快速操作：start / stop / restart <svc>。 */
   function action(name, service) {
     if (!QUICK_ACTIONS.has(name)) return { ok: false, error: `不支持的快速操作: ${name}` };
-    if (!service) return { ok: false, error: `bh ${name} 需要指定服务（family/ai/vault/webui/openvino/postgres）` };
+    if (!service) return { ok: false, error: `bh ${name} 需要指定服务（server/webui/openvino/postgres）` };
     const r = runQuick([name, service]);
     return { ok: r.ok, code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
@@ -428,7 +428,7 @@ export function createBhOps(config) {
       if (code !== 0 && NUGET_CACHE_ERROR_RE.test(entry.tail)) {
         append("\n[update] 检测到 NuGet 包缓存损坏（NETSDK1064），清理 buildkit 构建缓存后重建并部署…\n");
         await run(["prune"], "清理构建缓存");
-        code = await run(["build", "vault", "ai", "webui", "family"], "重建 .NET 镜像");
+        code = await run(["build", "server", "webui"], "重建 .NET 镜像");
         if (code === 0) code = await run(["deploy"], "部署");
       }
       entry.running = false;
@@ -444,7 +444,7 @@ export function createBhOps(config) {
   function startLongAction(name, service) {
     if (!LONG_ACTIONS.has(name)) return { ok: false, error: `不支持的长操作: ${name}` };
     if (name === "build-restart") {
-      if (!service) return { ok: false, error: "build-restart 需要指定服务（family/ai/vault/webui/openvino/postgres）" };
+      if (!service) return { ok: false, error: "build-restart 需要指定服务（server/webui/openvino）" };
       const op = startBuildRestart(service);
       return { ok: true, opId: op.id, action: "build-restart", service };
     }
@@ -470,7 +470,9 @@ export function createBhOps(config) {
   }
 
   function logs(service, lines) {
-    const svc = service || "family";
+    // 默认取唯一后端 bh-server（合并前默认 "family"，容器名 bh-family 已不存在；
+      // 注意 bh logs 对不存在的服务仍 exit 0，静默返回 "No resources found"，容易误导）
+    const svc = service || "server";
     const n = Math.min(Math.max(1, Number(lines) || 50), 500);
     const r = runQuick(["logs", svc, String(n)], STATUS_TIMEOUT_MS);
     return { ok: r.ok, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
