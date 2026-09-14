@@ -459,7 +459,7 @@ export function apply(ctx, config) {
       defineTool({
         name: "bh_status",
         description:
-          "查询百花服务的运行状态（server/webui/openvino/postgres 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。包含源码版本对比：git.head（当前仓库 HEAD）与各服务 imageCommit（部署时记录的 commit），upToDate 为 false 说明该服务运行的不是当前 HEAD 构建的镜像（需 bh_build_restart 或 bh_update）。宿主机运维工具，只读。",
+          "查询百花服务的运行状态（server/webui/openvino/postgres/open-webui 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。包含源码版本对比：git.head（当前仓库 HEAD）与各服务 imageCommit（部署时记录的 commit），upToDate 为 false 说明该服务运行的不是当前 HEAD 构建的镜像（需 bh_build_restart 或 bh_update）。宿主机运维工具，只读。",
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute() {
@@ -490,8 +490,8 @@ export function apply(ctx, config) {
       ctx.tools.register(
         defineTool({
           name: `bh_${name}`,
-          description: `对百花某个服务执行 ${name}（server/webui/openvino/postgres，可省略 bh- 前缀）。宿主机运维操作，执行前请先向用户确认。`,
-          parameters: { service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres" } },
+          description: `对百花某个服务执行 ${name}（server/webui/openvino/postgres/open-webui，可省略 bh- 前缀）。宿主机运维操作，执行前请先向用户确认。`,
+          parameters: { service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres / open-webui" } },
           output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
           async execute(args) {
             const r = bhOps.action(name, String(args.service));
@@ -546,9 +546,9 @@ export function apply(ctx, config) {
     ctx.tools.register(
       defineTool({
         name: "bh_logs",
-        description: "查看百花某个服务的最近日志（默认 50 行，最多 500）。参数 service 如 server/webui/openvino/postgres。",
+        description: "查看百花某个服务的最近日志（默认 50 行，最多 500）。参数 service 如 server/webui/openvino/postgres/open-webui。",
         parameters: {
-          service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres" },
+          service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres / open-webui" },
           lines: { type: "integer", description: "行数（默认 50）" },
         },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
@@ -1105,7 +1105,7 @@ export function apply(ctx, config) {
       try {
         const resp = await fetch(base + "/api/auth/cli-token", {
           method: "POST",
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(15000),
         });
         if (!resp.ok) {
           const text = await resp.text().catch(() => "");

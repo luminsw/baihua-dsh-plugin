@@ -21,14 +21,23 @@ window.__ModuleLoader__.load({
     const OPEN_URL = "/dsh-bridge/baihua/open-url";
 
     // “打开百花”：向 host 申请 cli-token，再打开百花 WebUI 首页（自动登录）
+    // 注意：window.open 必须在用户手势的同步上下文里调用，否则会被浏览器弹窗拦截器
+    // 静默拦截（await fetch 之后已脱离手势上下文）。故先同步开空白窗口占住手势，
+    // 拿到 URL 后再设置 location；失败则关掉空白窗口。
     const openBaihua = async (setMsg) => {
+      const win = window.open("about:blank", "_blank");
+      if (!win) {
+        setMsg({ ok: false, text: "打开百花失败：弹窗被浏览器拦截，请允许本站弹窗后重试" });
+        return;
+      }
       try {
         const res = await fetch(OPEN_URL, { cache: "no-store" });
         const j = await res.json().catch(() => null);
         if (!j || !j.ok) throw new Error((j && j.error) || "HTTP " + res.status);
-        window.open(j.url, "_blank", "noopener,noreferrer");
+        win.location = j.url;
         setMsg({ ok: true, text: "已打开百花 WebUI（自动登录）" });
       } catch (e) {
+        win.close();
         setMsg({ ok: false, text: "打开百花失败：" + (e instanceof Error ? e.message : String(e)) });
       }
     };
@@ -373,7 +382,7 @@ window.__ModuleLoader__.load({
                       React.createElement(
                         "td",
                         { style: td },
-                        (s.ready > 0 ? "● 运行中" : "○ 已停止") + " " + s.ready + "/" + s.replicas + " · " + s.phase
+                        (s.ready > 0 ? "● 运行中" : (s.replicas > 0 ? "◐ 启动中" : "○ 已停止")) + " " + s.ready + "/" + s.replicas + " · " + s.phase
                       ),
                       React.createElement(
                         "td",
@@ -388,7 +397,7 @@ window.__ModuleLoader__.load({
                       React.createElement(
                         "td",
                         { style: td },
-                        s.ready > 0
+                        s.replicas > 0
                           ? React.createElement(
                               "button",
                               { style: btn, disabled: busy, onClick: () => runAction("stop", s.name) },

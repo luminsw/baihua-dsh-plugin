@@ -275,7 +275,7 @@ export function createBhOps(config) {
   /** 快速操作：start / stop / restart <svc>。 */
   function action(name, service) {
     if (!QUICK_ACTIONS.has(name)) return { ok: false, error: `不支持的快速操作: ${name}` };
-    if (!service) return { ok: false, error: `bh ${name} 需要指定服务（server/webui/openvino/postgres）` };
+    if (!service) return { ok: false, error: `bh ${name} 需要指定服务（server/webui/openvino/postgres/open-webui）` };
     const r = runQuick([name, service]);
     return { ok: r.ok, code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
