@@ -76,6 +76,17 @@ window.__ModuleLoader__.load({
       return "○ 已停止";
     };
 
+    // 哪些服务有「编译」目标：
+    //   native → 只有 server/webui（openvino 是外部 OVMS，open-webui 是 Python venv）；
+    //   k8s    → 另有 openvino（仓库构建的容器镜像）；open-webui 两处都是上游镜像/venv。
+    // 以前给 open-webui/openvino 也显示「编译」，点了走 `bh build-restart <svc>` →
+    // native 下是空操作（Resolve-ServiceList 只认 server|webui）。现在按 cell 隐藏。
+    // payload 的 cell 字段由 host 侧补上；没有时（旧 host）保守视为 native。
+    const buildableServices = (data) => {
+      const cell = data && data.cell ? String(data.cell) : "native";
+      return cell === "k8s" ? ["server", "webui", "openvino"] : ["server", "webui"];
+    };
+
     // 可配置字段（与 host Config 对齐；token/drawToken 为 write-only）。
     // 这些字段全部归入「高级设置」（默认折叠）：零配置自举下单机部署无需改任何一项。
     const BAIHUA_FIELDS = [
@@ -415,7 +426,9 @@ window.__ModuleLoader__.load({
                       React.createElement(
                         "td",
                         { style: td },
-                        s.replicas > 0
+                        // 按钮按 ready 判定（不能用 replicas：native 下恒为 1，
+                        // 已停止的服务会显示成「停止」而不是「启动」）
+                        s.ready > 0
                           ? React.createElement(
                               "button",
                               { style: btn, disabled: busy, onClick: () => runAction("stop", s.name) },
@@ -431,11 +444,13 @@ window.__ModuleLoader__.load({
                           { style: btn, disabled: busy, onClick: () => runAction("restart", s.name) },
                           "重启"
                         ),
-                        React.createElement(
-                          "button",
-                          { style: btn, disabled: busy, onClick: () => runAction("build-restart", s.name) },
-                          "编译"
-                        )
+                        buildableServices(data).includes(s.name)
+                          ? React.createElement(
+                              "button",
+                              { style: btn, disabled: busy, onClick: () => runAction("build-restart", s.name) },
+                              "编译"
+                            )
+                          : null
                       )
                     )
                   )

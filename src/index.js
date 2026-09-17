@@ -1013,6 +1013,8 @@ export function apply(ctx, config) {
       if (!r.ok) return sendJson(res, 502, { ok: false, error: r.error });
       sendJson(res, 200, {
         ok: true,
+        // cell 供卡片决定「哪些服务有编译目标」（native 无 openvino 镜像构建）
+        cell: r.status.cell ?? null,
         updatedAt: r.status.updatedAt,
         git: r.status.git ?? null,
         summary: r.status.summary,
