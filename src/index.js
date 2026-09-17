@@ -1094,30 +1094,54 @@ export function apply(ctx, config) {
    * “打开百花”入口（GET /dsh-bridge/baihua/open-url）：向百花 WebUI 申请一次性
    * cli-token，返回可自动登录并直达首页的 URL。供 DSH 设置页客户端卡片调用；
    * 同源免 token（与 ui-action 相同策略），仅注册在回环 webServer、不暴露到 lanListen。
+   *
+   * 为什么是“候选探测”而不是直接用一个地址：`/api/auth/cli-token` 只挂在 Baihua.Web 上，
+   * 而两种 cell 下 WebUI 的位置不同——
+   *   - k8s：WebUI 在 Traefik :80 后面，与本机后端同源，`/api/dsh/config` 的 webUrl 正确；
+   *   - native：WebUI 是独立进程 :5177，后端 :8788，而 `/api/dsh/config` 仍按 k8s 口径
+   *     把 webUrl 报成后端自身（DshController: webUrl = baseUrl）——照它发请求会 404；
+   *     宿主机 :80 是 `:80 -> :8788` 的移动端统一入口（portproxy），同样到不了 WebUI。
+   * 因此按序探测、取第一个真正返回 token 的地址，两种 cell 都无需额外配置。
    */
   function handleOpenBaihua(req, res) {
     if (req.method !== "GET") return sendJson(res, 405, { ok: false, error: "method not allowed" });
     if (!sameOriginRequest(req)) return sendJson(res, 403, { ok: false, error: "仅允许 DSH 页面同源调用" });
-    // 兜底走统一入口 :80（WebUI 也在 Traefik 后面；5177 仅集群内）
-    const base = String(cfg().webUrl || "http://127.0.0.1").trim().replace(/\/+$/, "");
-    if (!base) return sendJson(res, 400, { ok: false, error: "webUrl 未配置" });
+    const c = cfg();
+    const candidates = [];
+    const addCandidate = (u) => {
+      const v = String(u ?? "").trim().replace(/\/+$/, "");
+      if (v && !candidates.includes(v)) candidates.push(v);
+    };
+    addCandidate(c.webUrl);                 // 1. 用户显式配置（设置页「WebUI 地址」）
+    addCandidate(bootstrap.webUrl);         // 2. 本机自举（k8s 下即 Traefik :80，正确）
+    addCandidate("http://127.0.0.1:5177");  // 3. native cell 的 WebUI 进程（bh webui）
+    addCandidate("http://127.0.0.1");       // 4. 最后兜底：统一入口 :80
     void (async () => {
-      try {
-        const resp = await fetch(base + "/api/auth/cli-token", {
-          method: "POST",
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!resp.ok) {
-          const text = await resp.text().catch(() => "");
-          return sendJson(res, 502, { ok: false, error: "百花 WebUI 返回 HTTP " + resp.status + (text ? "：" + text.slice(0, 120) : "") });
+      const tried = [];
+      for (const base of candidates) {
+        try {
+          const resp = await fetch(base + "/api/auth/cli-token", {
+            method: "POST",
+            // 单个候选 5s：入口挂死（如 :80 指向不可达目标）时不拖住整个请求
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!resp.ok) {
+            tried.push(`${base} → HTTP ${resp.status}`);
+            continue;
+          }
+          const data = await resp.json().catch(() => null);
+          const token = data?.token;
+          if (!token) {
+            tried.push(`${base} → 响应缺少 token`);
+            continue;
+          }
+          sendJson(res, 200, { ok: true, url: base + "/?cli-token=" + encodeURIComponent(token) });
+          return;
+        } catch (e) {
+          tried.push(`${base} → ${e instanceof Error ? e.message : String(e)}`);
         }
-        const data = await resp.json().catch(() => null);
-        const token = data?.token;
-        if (!token) return sendJson(res, 502, { ok: false, error: "cli-token 响应缺少 token" });
-        sendJson(res, 200, { ok: true, url: base + "/?cli-token=" + encodeURIComponent(token) });
-      } catch (e) {
-        sendJson(res, 502, { ok: false, error: "获取 cli-token 失败：" + (e instanceof Error ? e.message : String(e)) });
       }
+      sendJson(res, 502, { ok: false, error: "获取 cli-token 失败（已尝试：" + tried.join("；") + "）" });
     })();
   }
 
