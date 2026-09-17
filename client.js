@@ -58,6 +58,24 @@ window.__ModuleLoader__.load({
       return rm ? `${h}h ${rm}m` : `${h}h`;
     };
 
+    // 服务状态徽标：只信 ready（就绪副本数）与 phase（bh status 给出的真实阶段）。
+    // 不能用 replicas 判断：native cell 下 replicas 恒为 1（表示“已部署/期望 1 个”，
+    // 见 tools/bh/win/native/bh.ps1），k8s cell 下是 spec 期望副本数——把 replicas>0
+    // 当“正在启动”会把 phase=Stopped 误显示成“启动中”。
+    const TRANSIENT_PHASES = new Set([
+      "Pending", "ContainerCreating", "PodInitializing", "Progressing",
+      "StartPending", "ContinuePending",
+    ]);
+    const ABNORMAL_PHASES = new Set(["PortOpen", "ProcAlive", "ReplicaFailure", "PausePending"]);
+    const serviceStateLabel = (s) => {
+      const phase = s && s.phase ? String(s.phase) : "";
+      if (s && s.ready > 0) return "● 运行中";
+      if (phase === "StopPending") return "○ 停止中";
+      if (TRANSIENT_PHASES.has(phase)) return "◐ 启动中";
+      if (ABNORMAL_PHASES.has(phase)) return "⚠ 异常（" + phase + "）";
+      return "○ 已停止";
+    };
+
     // 可配置字段（与 host Config 对齐；token/drawToken 为 write-only）。
     // 这些字段全部归入「高级设置」（默认折叠）：零配置自举下单机部署无需改任何一项。
     const BAIHUA_FIELDS = [
@@ -382,7 +400,7 @@ window.__ModuleLoader__.load({
                       React.createElement(
                         "td",
                         { style: td },
-                        (s.ready > 0 ? "● 运行中" : (s.replicas > 0 ? "◐ 启动中" : "○ 已停止")) + " " + s.ready + "/" + s.replicas + " · " + s.phase
+                        serviceStateLabel(s) + " " + s.ready + "/" + s.replicas + " · " + s.phase
                       ),
                       React.createElement(
                         "td",
