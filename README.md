@@ -185,8 +185,9 @@ curl http://127.0.0.1:3080/dsh-bridge/status
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.0-rc.7（`@deepseek-ai/dsh-agent` / `dsh-session` /
-  `dsh-llm` / `dsh-host-webserver` / `cordis`）
+- DeepSeek Harness ≥ 0.2.0-rc.2（`@deepseek-ai/dsh-agent` / `dsh-session` /
+  `dsh-llm` / `dsh-host-webserver` / `cordis`）；peerDependencies 里的
+  `@deepseek-ai/dsh-*` 范围为 `^0.2.0-rc.2`，DSH 大版本升级后需同步 bump
 - Node.js ≥ 22.19 或 ≥ 24
 
 ## License
