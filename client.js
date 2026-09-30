@@ -100,8 +100,42 @@ window.__ModuleLoader__.load({
       { key: "gitRepo", label: "git 仓库根", hint: "提交推送用；默认自动推断", type: "text" },
     ];
 
+    /**
+     * 把「插件」页宿主托管的配置表单适配成旧版 settingsScope 形状
+     * （getSnapshot/subscribe/set/unset），卡片里的字段表单代码无需改动。
+     * DSH 0.2.x 起 settingsScope 服务已移除：配置值与写回由宿主按 Loader 条目 id 投影，
+     * 经 plugins.row.config 槽位的 props.form = { state, mutate } 下发。
+     * @param {() => ({ state: any, mutate: Function }|undefined)} read 读取最新 form
+     */
+    function hostedScope(read) {
+      const fallback = { status: "unavailable", value: {}, writable: false, mode: "host" };
+      return {
+        getSnapshot: () => {
+          const form = read();
+          return form && form.state ? form.state : fallback;
+        },
+        subscribe: () => () => {},
+        set: (field, value) => {
+          const form = read();
+          return form ? form.mutate([{ op: "set", path: [field], value }]) : Promise.resolve(false);
+        },
+        unset: (field) => {
+          const form = read();
+          return form ? form.mutate([{ op: "unset", path: [field] }]) : Promise.resolve(false);
+        },
+      };
+    }
+
     function BaihuaStatusCard(props) {
-      const scope = props.scope;
+      // summary 只用于行描述兜底（bundle 配置页只渲染 page）
+      if (props.view === "summary") {
+        return React.createElement("span", null, "百花服务状态 / 启停·编译·更新（bh）");
+      }
+      const formRef = React.useRef(props.form);
+      formRef.current = props.form;
+      const hasForm = props.form !== undefined && props.form !== null;
+      const hosted = React.useMemo(() => (hasForm ? hostedScope(() => formRef.current) : null), [hasForm]);
+      const scope = props.scope !== undefined ? props.scope : hosted;
       const [data, setData] = useState(null);
       const [err, setErr] = useState(null);
       const [busy, setBusy] = useState(false);
@@ -518,26 +552,24 @@ window.__ModuleLoader__.load({
       name: "dsh-baihua-bridge-client",
       inject: ["slots"],
       apply(ctx) {
-        // 绑定 baihua settings namespace（host 提供 settingsScope 服务；缺失时退化为只读状态卡）
-        const settingsScope = ctx.get("settingsScope");
-        let scope = null;
-        if (settingsScope) {
-          try {
-            scope = settingsScope.bind({ namespace: "baihua" });
-            ctx.onDispose(() => {
-              try { scope?.dispose?.(); } catch { /* noop */ }
-            });
-          } catch (e) {
-            console.log("[dsh-baihua-bridge] settingsScope.bind 失败，退化为只读：", e.message);
-          }
-        }
-        ctx.slots.inject("settings.plugin.item", function* () {
+        // DSH 0.2.x：卡片挂在「插件」页里本 bundle 自己的页面上
+        // （plugins.bundle.config，key = 包名）；旧版 settings.plugin.item 槽位已删除。
+        ctx.slots.inject("plugins.bundle.config", function* () {
           yield ctx.slots.register(
             {
-              name: "settings.plugin.item",
-              key: "baihua",
-              locale: "settings.baihua",
-              inject: () => ({ scope }),
+              name: "plugins.bundle.config",
+              key: "baihua-dsh-plugin",
+            },
+            BaihuaStatusCard
+          );
+        });
+        // 本行的「配置」页（key = 包名#条目 id）：宿主经 props.form 下发取值/写回句柄，
+        // 卡片里的字段表单据此可编辑（写回 profile patch，由 Loader 重放 config）。
+        ctx.slots.inject("plugins.row.config", function* () {
+          yield ctx.slots.register(
+            {
+              name: "plugins.row.config",
+              key: "baihua-dsh-plugin#dsh-baihua-bridge",
             },
             BaihuaStatusCard
           );

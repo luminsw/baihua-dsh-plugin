@@ -82,13 +82,18 @@
 DSH 内经 `@deepseek-ai/dsh-mcp-client` 接入后工具名带 `mcp__baihua__` 前缀
 （`mcp__baihua__baihua_vault_search`、`mcp__baihua__baihua_budget_summary` 等）。
 
-### DSH 设置页「百花服务状态」卡片（客户端插件）
+### DSH「插件」页「百花服务状态」卡片（客户端插件）
 
-本包同时携带浏览器侧客户端模块（`client.js`，lazy-CJS factory 格式）：在 **DSH 设置 →
-插件**页注册一张「百花服务」卡片，只读展示百花各服务状态（就绪/副本/阶段/重启 + 运行中
-bh 操作），每 10s 自动刷新。数据来自 host 侧 `/dsh-bridge/bh/status-ui`（仅 127.0.0.1
-webServer、免鉴权、只读；局域网桥不暴露此路由）。
-详见百花仓库 `docs/DSH_INTEGRATION.md` 的 6.5 节。
+本包同时携带浏览器侧客户端模块（`client.js`，lazy-CJS factory 格式）：注册一张「百花服务」
+卡片，只读展示百花各服务状态（就绪/副本/阶段/重启 + 运行中 bh 操作）+ 启停/编译/更新按钮，
+每 10s 自动刷新。数据来自 host 侧 `/dsh-bridge/bh/status-ui`（仅 127.0.0.1 webServer、
+免鉴权、只读；局域网桥不暴露此路由）。
+
+> **槽位（DSH 0.2.x）**：卡片注册在 `plugins.bundle.config`（key = 包名 `baihua-dsh-plugin`），
+> 渲染在「插件」页本 bundle 自己的页面上；改配置的表单注册在 `plugins.row.config`
+> （key = `baihua-dsh-plugin#dsh-baihua-bridge`），宿主经 `props.form = { state, mutate }`
+> 下发取值/写回。0.1.x 的 `settings.plugin.item` 槽位与 `settingsScope` 服务在 0.2.x 已删除，
+> 旧的 `settings.installSection` 由 settings 服务按 Loader 条目 id 自动投影取代。
 
 ### 事件流格式（每行一个 JSON）
 

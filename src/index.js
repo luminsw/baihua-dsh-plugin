@@ -214,13 +214,14 @@ export function apply(ctx, config) {
   const active = new Map();
   /** 会话元数据清单（内存，供列表展示）。 */
   const metas = [];
-  // 设置页表单可改配置：setSource 重绑 current，运行时读最新值（修 setSource no-op bug）。
+  // 配置表单：DSH 0.2.x 起由 settings 服务按 Loader 条目 id 自动投影（写回 profile patch，
+  // 再由 Loader 重放本条目 → config 即最新值）；旧版 settings.installSection 已删除。
   let current = () => config;
   ctx.inject(["settings"], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, SETTINGS_NS, Config, config, {
-      setSource: (source) => { current = source; },
-      onChange: () => {},
-    });
+    const s = settingsCtx.settings;
+    if (s && typeof s.configure === "function") {
+      try { ctx.effect(() => s.configure({ auto: true })); } catch { /* 已注册/不支持：忽略 */ }
+    }
   });
   // 零配置自举：从本机 /api/dsh/config 拉拓扑，仅填充「未显式设置」的服务地址/绘图网关/token。
   // 用户显式配置（settings/patch）优先；自举作为兜底默认。
