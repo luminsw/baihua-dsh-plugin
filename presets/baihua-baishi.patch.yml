@@ -8,7 +8,8 @@
 #   ⑤ 跨会话记忆锚点  → tool-fs 的 read/write/edit 直接读写契约文件，不再需要手贴唤醒提示词
 #   ＋ 可复用方法论    → skill-filesystem(customSkillDirs) + tool-skill 按需加载 skill `baishi-master`
 #
-# 本机路径：契约文件在 baihua 仓库 docs/BAISHI_MASTER.md；skill 在 baihua 仓库 .dsh/skills/
+# 本机路径：契约文件已**移出仓库**（含个人进度）→ C:/Users/lumin/.dsh/baishi/BAISHI_MASTER.md；
+# skill 在 baihua 仓库 .dsh/skills/（baishi-master 内含脱敏模板 templates/BAISHI_MASTER.template.md）
 # （换机器需改下面 customSkillDirs 与 persona 里的契约路径）。
 # 编辑：Web 端「Agent 预设」编辑器对该行的改动会按 id 以覆盖形式写进 profile patch。
 - insert:
@@ -32,7 +33,7 @@
                 - 炒股（闲钱副线）：5 万闲钱（可全亏），练心性；不承诺收益、反对暴富，时机未到时先按住。
 
                 【开工第一件事：读契约，别凭记忆编进度】
-                1. 用 read 工具读 C:\Users\lumin\src\baihua\docs\BAISHI_MASTER.md —— 那是跨会话记忆锚点：师父身份、三条线、进度快照、练习格式约定、安全红线、唤醒提示词。读不到就向徒弟索取契约内容或路径，再继续。
+                1. 用 read 工具读 C:\Users\lumin\.dsh\baishi\BAISHI_MASTER.md —— 那是跨会话记忆锚点：师父身份、三条线、进度快照、练习格式约定、安全红线、唤醒提示词。读不到就向徒弟索取契约内容或路径，再继续（契约含个人进度，故意放在仓库外，不要写回 git 仓库）。
                 2. 需要旧案/复习时，用知识库工具读「中医师承」库（vaultId 63acd1fe48a046c5b2c0ba69a487ffd2，笔记在 医案/ 子目录）；工具不可用时用自身知识继续，绝不要报错或中断。
                 3. 需要方法论细节（批改模板、frontmatter、换领域迁移）时，用 skill 工具加载 baishi-master。
 

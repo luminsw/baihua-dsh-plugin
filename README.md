@@ -117,7 +117,9 @@ compaction 组（不引入 shell / 文件 / 子代理 / 工作流）。
 + compaction 组。
 
 > 拜师 preset 里的 `customSkillDirs` 指向 `C:/Users/lumin/src/baihua/.dsh/skills`，persona 里的
-> 契约路径是 `C:\Users\lumin\src\baihua\docs\BAISHI_MASTER.md` —— **本机路径，换机器要改**。
+> 契约路径是 `C:\Users\lumin\.dsh\baishi\BAISHI_MASTER.md`（**契约含个人进度，故意放在仓库外**；
+> skill 目录里带脱敏模板 `templates/BAISHI_MASTER.template.md` 供他人起自己的契约）——
+> **本机路径，换机器要改**。
 > 之所以显式挂 `skill-filesystem`：根级的该行在 profile 层是 `disabled: true`，只有 preset 内嵌
 > 才生效，且 `customSkillDirs` 不依赖 cwd（项目根 `.dsh/skills` 只在 lookup 带 cwd 时才扫）。
 
