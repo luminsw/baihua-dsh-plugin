@@ -62,6 +62,9 @@
             name: "@deepseek-ai/dsh-tool-fs"
           - id: tool-fs-search
             name: "@deepseek-ai/dsh-tool-fs-search"
+            config:
+              # 必填（无默认值）：漏了会让整个 preset 挂载失败，客户端 picker 直接隐藏该模式
+              sampleOverCapGlobResults: false
 
           # skill 机制：显式挂载（不依赖默认 preset），让 baishi-master / baihua-coding 可按需加载
           - id: skill-filesystem

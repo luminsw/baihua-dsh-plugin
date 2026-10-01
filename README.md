@@ -123,6 +123,23 @@ compaction 组（不引入 shell / 文件 / 子代理 / 工作流）。
 > 之所以显式挂 `skill-filesystem`：根级的该行在 profile 层是 `disabled: true`，只有 preset 内嵌
 > 才生效，且 `customSkillDirs` 不依赖 cwd（项目根 `.dsh/skills` 只在 lookup 带 cwd 时才扫）。
 
+**自检（强烈建议改完 preset 就跑一次）**：
+
+```bash
+node scripts/preset-roster.mjs          # 默认 web profile；可传 tui 等
+```
+
+它在进程内 boot 一次 profile（随机端口，不打断在跑的实例），直接读 preset 注册表并打印
+**每个 preset 的挂载诊断**，broken 时给出原因并以非 0 退出。
+
+> 两个坑（都踩过）：
+> 1. **客户端 picker 会隐藏 broken 的 preset**（`ui-agent-preset` 里
+>    `presets.filter((p) => p.broken === void 0)`），所以「界面里看不到某个模式」基本就是
+>    它挂载失败——详情只在设置页 → 「Agent 预设」的红字里。
+> 2. **行 config 里必填字段漏了，会让整个 preset 挂掉**。实例：`@deepseek-ai/dsh-tool-fs-search`
+>    的 `sampleOverCapGlobResults` **必填无默认**，漏写导致「百花拜师」整条 broken、picker 里消失。
+>    写 preset 时按官方 `@deepseek-ai/dsh-web-app/presets/*.patch.yml` 里的同名行为准。
+
 通用约定：
 
 - 需要 DSH 0.2.x 的**声明式 preset 行**（`@deepseek-ai/dsh-agent-preset`，

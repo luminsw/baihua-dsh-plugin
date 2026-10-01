@@ -59,5 +59,7 @@
     "@deepseek-ai/schemastery": "^3.18.0",
     "ws": "^8.0.0"
   },
-  "scripts": {}
+  "scripts": {
+    "preset-roster": "node scripts/preset-roster.mjs"
+  }
 }
