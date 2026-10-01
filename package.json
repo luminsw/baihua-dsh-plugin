@@ -14,13 +14,15 @@
       "default": "./client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./presets/*.patch.yml": "./presets/*.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
     "client.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "presets"
   ],
   "license": "MIT",
   "keywords": [
@@ -33,7 +35,10 @@
   ],
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/baihua-tcm.patch.yml"
+      ]
     },
     "client": {
       "platform": "web",
