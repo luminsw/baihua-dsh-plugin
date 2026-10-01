@@ -37,7 +37,8 @@
     "bundle": {
       "patch": [
         "./cordis.patch.yml",
-        "./presets/baihua-tcm.patch.yml"
+        "./presets/baihua-tcm.patch.yml",
+        "./presets/baihua-baishi.patch.yml"
       ]
     },
     "client": {

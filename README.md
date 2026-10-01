@@ -95,17 +95,34 @@ DSH 内经 `@deepseek-ai/dsh-mcp-client` 接入后工具名带 `mcp__baihua__` �
 > 下发取值/写回。0.1.x 的 `settings.plugin.item` 槽位与 `settingsScope` 服务在 0.2.x 已删除，
 > 旧的 `settings.installSection` 由 settings 服务按 Loader 条目 id 自动投影取代。
 
-### 随包分发的 Agent 预设：百花中医（`presets/baihua-tcm.patch.yml`）
+### 随包分发的 Agent 预设（`presets/*.patch.yml`）
 
-本包的 bundle patch 列表除了 `cordis.patch.yml`，还带一个 agent preset 行：
+本包的 bundle patch 列表除了 `cordis.patch.yml`，还带两个 agent preset 行：
 
 ```jsonc
-"dsh": { "bundle": { "patch": ["./cordis.patch.yml", "./presets/baihua-tcm.patch.yml"] } }
+"dsh": { "bundle": { "patch": ["./cordis.patch.yml",
+                               "./presets/baihua-tcm.patch.yml",
+                               "./presets/baihua-baishi.patch.yml"] } }
 ```
 
-- 预设 id `baihua-tcm`、显示名「百花中医」：循中医辨证论治思路逐步四诊问诊 → 八纲/脏腑辨证
-  → 经方为主出参考药方，并在收尾给出就医提醒；组合只有 persona + `tool-web(fetch:false)` +
-  `tool-ask-user` + compaction 组（不引入 shell / 文件 / 子代理 / 工作流）。
+**① 百花中医（`baihua-tcm`）**：循中医辨证论治思路逐步四诊问诊 → 八纲/脏腑辨证 → 经方为主出
+参考药方，并在收尾给出就医提醒；组合只有 persona + `tool-web(fetch:false)` + `tool-ask-user` +
+compaction 组（不引入 shell / 文件 / 子代理 / 工作流）。
+
+**② 百花拜师（`baihua-baishi`）**：以「师父」身份带长期刻意练习的导师模式——出题 → 徒弟按固定
+格式作答 → **结构化批改五步**（总评 / 抓对的与抓错的并讲错因 / 标准答案 / 一个可教鉴别点 /
+肯定亮点）→ 落知识库 → 更新契约进度。组合 = persona（三条线定位 + 五阶段 + 红线 +
+**开工先读契约文件**）+ `tool-fs`（read/write/edit，读写契约与医案）+ `tool-fs-search` +
+`skill-filesystem`(`customSkillDirs`) + `tool-skill` + `tool-ask-user` + `tool-web(fetch:false)`
++ compaction 组。
+
+> 拜师 preset 里的 `customSkillDirs` 指向 `C:/Users/lumin/src/baihua/.dsh/skills`，persona 里的
+> 契约路径是 `C:\Users\lumin\src\baihua\docs\BAISHI_MASTER.md` —— **本机路径，换机器要改**。
+> 之所以显式挂 `skill-filesystem`：根级的该行在 profile 层是 `disabled: true`，只有 preset 内嵌
+> 才生效，且 `customSkillDirs` 不依赖 cwd（项目根 `.dsh/skills` 只在 lookup 带 cwd 时才扫）。
+
+通用约定：
+
 - 需要 DSH 0.2.x 的**声明式 preset 行**（`@deepseek-ai/dsh-agent-preset`，
   `config = { id, name?, description?, order?, plugins[] }`）。0.1.x 那种
   `~/.dsh/.agent-presets/<id>/{preset.yml,agent.cordis.yml}` 目录式 preset 在 0.2.x
@@ -113,8 +130,9 @@ DSH 内经 `@deepseek-ai/dsh-mcp-client` 接入后工具名带 `mcp__baihua__` �
 - 装了本插件即可在会话的预设选择器里选到；Web 端「Agent 预设」编辑器对它的改动会按 id
   以**覆盖**形式写进 profile patch（profile 层晚于 bundle 层）。因此**不要在 profile patch 里
   再 insert 同名 id**——会 `duplicate loader entry id`。
-- 预设里的百花知识库 / 病历本工具是**可选增强**：工具不在时 persona 会退化为纯对话辨证开方，
-  不会报错（未装百花 MCP 时也如此）。
+- 预设里的百花知识库 / 病历本工具是**可选增强**：工具不在时 persona 会降级继续（纯对话辨证开方 /
+  落库降级为把笔记正文回给用户），不会报错（未装百花 MCP 时也如此）。
+
 
 ### 事件流格式（每行一个 JSON）
 
