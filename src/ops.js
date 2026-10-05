@@ -2,7 +2,9 @@
  * ops.js — 百花服务运维（bh CLI 封装）。
  *
  * 运行在 DSH 所在宿主机（Node 进程），通过 child_process 调用 bh（bash）：
- *  - 快速操作（status/start/stop/restart/logs）：spawnSync + 超时，同步返回；
+ *  - 快速操作（status/start/stop/restart/logs）：**异步 spawn + 超时**（绝不 spawnSync——
+ *    DSH 是单线程，同步调用会把整个 harness 冻住，实测 `bh status --json` 要 6.4s）；
+ *    status 另有 5s 新鲜期缓存与「超时回退旧快照」；
  *  - 长操作（build/update/up/deploy）：后台 spawn，输出落盘 + 内存 tail，
  *    返回 opId 供轮询（进程存活期间有效）。
  *
@@ -17,6 +19,15 @@ import { homedir, tmpdir } from "node:os";
 const QUICK_TIMEOUT_MS = 60_000;
 const STATUS_TIMEOUT_MS = 20_000;
 const MAX_TAIL = 16_000;
+/**
+ * 状态采集上限：`bh status --json` 在 native cell 上要 6s 左右（WMI/端口/git 扫描），
+ * 这里给一个硬上限，超时即 kill，避免请求悬挂。
+ */
+const STATUS_HARD_TIMEOUT_MS = 12_000;
+/** 状态缓存新鲜期：窗口内的重复请求（UI 卡片轮询 / 工具连续调用）直接复用，不再起子进程。 */
+const STATUS_CACHE_TTL_MS = 5_000;
+/** UI 卡片最多同步等这么久；超时先回退旧快照（stale=true），采集在后台继续。 */
+const STATUS_UI_MAX_WAIT_MS = 1_200;
 
 /** NuGet 包缓存损坏的特征错误（NETSDK1064 / restore 部分完成 / 包 not found）。命中即清理 buildkit 缓存后重试。 */
 const NUGET_CACHE_ERROR_RE = /NETSDK1064|only partially completed|was not found/i;
@@ -140,25 +151,55 @@ export function createBhOps(config) {
     return [winCmd, ["/d", "/s", "/c", line]];
   }
 
-  function runQuick(args, timeoutMs = QUICK_TIMEOUT_MS) {
-    try {
+  /**
+   * 异步执行 bh 子命令：不阻塞事件循环。
+   *
+   * ⚠️ 不要改回 spawnSync：DSH 是单线程 Node 进程，同步执行子命令会把整个 harness
+   * （Web UI、SSE、流式输出）冻住；实测 `bh status --json` 一次要 6.4s，同步版就是 6.4s 全站卡死。
+   * 超时后 kill 子进程并返回 timedOut。
+   */
+  function runAsync(args, timeoutMs = QUICK_TIMEOUT_MS) {
+    return new Promise((resolve) => {
       const [cmd, argv] = bhArgv(args);
-      const r = spawnSync(cmd, argv, {
-        encoding: "utf8",
-        timeout: timeoutMs,
-        maxBuffer: 4 * 1024 * 1024,
-      });
-      const timedOut = r.error?.killed === true;
-      return {
-        ok: r.status === 0,
-        code: r.status ?? null,
-        timedOut,
-        stdout: (r.stdout || "").trim(),
-        stderr: (r.stderr || "").trim(),
+      let settled = false;
+      const done = (v) => {
+        if (settled) return;
+        settled = true;
+        resolve(v);
       };
-    } catch (e) {
-      return { ok: false, error: e.message, stdout: "", stderr: "" };
-    }
+      let child;
+      try {
+        child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
+      } catch (e) {
+        return done({ ok: false, code: null, timedOut: false, stdout: "", stderr: String(e?.message ?? e) });
+      }
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          /* noop */
+        }
+        done({ ok: false, code: null, timedOut: true, stdout, stderr });
+      }, timeoutMs);
+      child.stdout?.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.stderr?.on("data", (d) => {
+        stderr += d.toString();
+      });
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        done({ ok: false, code: null, timedOut: false, stdout, stderr: String(e?.message ?? e) });
+      });
+      // status/logs 这类一次性命令用 close（等 stdout 收全）；只有 start/stop 那种把管道交给
+      // 常驻服务的命令才必须用 exit（见 startLong 的说明）。
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        done({ ok: code === 0, code: code ?? null, timedOut: false, stdout, stderr });
+      });
+    });
   }
 
   function startLong(action, service) {
@@ -235,48 +276,104 @@ export function createBhOps(config) {
     };
   }
 
-  /** 状态总览（bh status --json 解析 + 运行中的长操作 + 最近完成操作）。 */
-  async function status() {
-    const r = runQuick(["status", "--json"], STATUS_TIMEOUT_MS);
-    if (!r.ok) {
-      return {
-        ok: false,
-        error: r.timedOut ? "bh status 超时" : r.stderr || r.stdout || `bh status 失败（exit ${r.code}）`,
-      };
-    }
-    try {
-      const parsed = JSON.parse(r.stdout);
-      const all = [...ops.values()];
-      const now = Date.now();
-      // 清理已结束超过 1 小时的 op（避免内存/列表无限膨胀）
-      for (const op of all) {
-        if (!op.running && now - new Date(op.startedAt).getTime() >= 60 * 60 * 1000) {
-          ops.delete(op.id);
-        }
+  /** 最近一次成功的 status 解析结果（缓存），以及进行中的采集。 */
+  let statusSnapshot = null;
+  let statusSnapshotAt = 0;
+  let statusInflight = null;
+
+  /** 组装返回体：缓存里的 status + 实时内存态 ops 列表（ops 是内存数据，不需要重新采集）。 */
+  function statusView(parsed, stale) {
+    const all = [...ops.values()];
+    const now = Date.now();
+    // 清理已结束超过 1 小时的 op（避免内存/列表无限膨胀）
+    for (const op of all) {
+      if (!op.running && now - new Date(op.startedAt).getTime() >= 60 * 60 * 1000) {
+        ops.delete(op.id);
       }
-      const remaining = [...ops.values()];
-      return {
-        ok: true,
-        status: parsed,
-        // 只含真正运行中的（已完成的不算"进行中"，避免卡片永远显示有操作）
-        runningOps: remaining.filter((op) => op.running).map(opView),
-        // 最近完成的（供"最近操作"列表展示），按开始时间倒序，最多 10 条
-        recentOps: remaining
-          .filter((op) => !op.running)
-          .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
-          .slice(0, 10)
-          .map(opView),
-      };
-    } catch {
-      return { ok: false, error: `bh status 输出不是 JSON：${r.stdout.slice(0, 300)}` };
+    }
+    const remaining = [...ops.values()];
+    return {
+      ok: true,
+      status: parsed,
+      /** true = 采集还没回来，这里返回的是上一次的快照。 */
+      stale: Boolean(stale),
+      // 只含真正运行中的（已完成的不算"进行中"，避免卡片永远显示有操作）
+      runningOps: remaining.filter((op) => op.running).map(opView),
+      // 最近完成的（供"最近操作"列表展示），按开始时间倒序，最多 10 条
+      recentOps: remaining
+        .filter((op) => !op.running)
+        .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
+        .slice(0, 10)
+        .map(opView),
+    };
+  }
+
+  /** 发起（或复用）一次 bh status 采集。异步、带缓存，绝不会阻塞事件循环。 */
+  function refreshStatus() {
+    if (statusInflight) return statusInflight;
+    statusInflight = runAsync(["status", "--json"], STATUS_HARD_TIMEOUT_MS)
+      .then((r) => {
+        if (!r.ok) {
+          return {
+            ok: false,
+            error: r.timedOut ? "bh status 超时" : r.stderr || r.stdout || `bh status 失败（exit ${r.code}）`,
+          };
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(r.stdout);
+        } catch {
+          return { ok: false, error: `bh status 输出不是 JSON：${r.stdout.slice(0, 300)}` };
+        }
+        statusSnapshot = parsed;
+        statusSnapshotAt = Date.now();
+        return statusView(parsed, false);
+      })
+      .finally(() => {
+        statusInflight = null;
+      });
+    return statusInflight;
+  }
+
+  /**
+   * 状态总览（bh status --json 解析 + 运行中的长操作 + 最近完成操作）。
+   *
+   * 性能约定（2026-10 实测 `bh status --json` 单次要 6.4s）：
+   *  - 一律异步 spawn，绝不用 spawnSync —— 同步版会把整个 DSH 事件循环冻住 6s 以上；
+   *  - 5s 新鲜期内直接复用缓存；
+   *  - 传 maxWaitMs（UI 卡片用）时，超时先回退旧快照（stale=true），采集在后台继续。
+   * @param {{maxWaitMs?: number}} [opts]
+   */
+  async function status(opts = {}) {
+    if (statusSnapshot && Date.now() - statusSnapshotAt < STATUS_CACHE_TTL_MS) {
+      return statusView(statusSnapshot, false);
+    }
+    const pending = refreshStatus();
+    const { maxWaitMs } = opts;
+    // 没有旧快照可回退 → 只能等这一次采集（首次打开卡片）
+    if (!statusSnapshot || !Number.isFinite(maxWaitMs) || maxWaitMs <= 0) return pending;
+    let timerId;
+    const timeout = new Promise((resolve) => {
+      timerId = setTimeout(() => resolve(null), maxWaitMs);
+      timerId.unref?.();
+    });
+    try {
+      const r = await Promise.race([pending, timeout]);
+      if (r === null) {
+        pending.catch(() => {});
+        return statusView(statusSnapshot, true);
+      }
+      return r;
+    } finally {
+      clearTimeout(timerId);
     }
   }
 
-  /** 快速操作：start / stop / restart <svc>。 */
-  function action(name, service) {
+  /** 快速操作：start / stop / restart <svc>（异步，不阻塞事件循环）。 */
+  async function action(name, service) {
     if (!QUICK_ACTIONS.has(name)) return { ok: false, error: `不支持的快速操作: ${name}` };
     if (!service) return { ok: false, error: `bh ${name} 需要指定服务（server/webui/openvino/postgres/open-webui）` };
-    const r = runQuick([name, service]);
+    const r = await runAsync([name, service]);
     return { ok: r.ok, code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
 
@@ -469,12 +566,12 @@ export function createBhOps(config) {
     return op ? opView(op) : null;
   }
 
-  function logs(service, lines) {
+  async function logs(service, lines) {
     // 默认取唯一后端 bh-server（合并前默认 "family"，容器名 bh-family 已不存在；
       // 注意 bh logs 对不存在的服务仍 exit 0，静默返回 "No resources found"，容易误导）
     const svc = service || "server";
     const n = Math.min(Math.max(1, Number(lines) || 50), 500);
-    const r = runQuick(["logs", svc, String(n)], STATUS_TIMEOUT_MS);
+    const r = await runAsync(["logs", svc, String(n)], STATUS_TIMEOUT_MS);
     return { ok: r.ok, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
 
@@ -916,8 +1013,14 @@ export function createBhOps(config) {
     return entry;
   }
 
+  /** UI 卡片专用入口：最多同步等 STATUS_UI_MAX_WAIT_MS，超时先回退旧快照（采集在后台继续）。 */
+  function statusForUi() {
+    return status({ maxWaitMs: STATUS_UI_MAX_WAIT_MS });
+  }
+
   return {
     status,
+    statusForUi,
     action,
     startLongAction,
     listOps,

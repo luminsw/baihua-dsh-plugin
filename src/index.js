@@ -228,7 +228,7 @@ export function apply(ctx, config) {
   let bootstrap = {};
   try {
     const base = (current().familyUrl || "http://127.0.0.1").trim().replace(/\/+$/, "");
-    fetch(`${base}/api/dsh/config`, { cache: "no-store" })
+    fetch(`${base}/api/dsh/config`, { cache: "no-store", signal: AbortSignal.timeout(2500) })
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => { if (j && j.ok) bootstrap = j; })
       .catch(() => {});
@@ -495,7 +495,7 @@ export function apply(ctx, config) {
           parameters: { service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres / open-webui" } },
           output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
           async execute(args) {
-            const r = bhOps.action(name, String(args.service));
+            const r = await bhOps.action(name, String(args.service));
             return r.ok ? `✅ bh ${name} ${args.service}：${r.stdout || "完成"}` : `❌ bh ${name} 失败：${r.stderr || r.stdout || "未知错误"}`;
           },
         }),
@@ -554,7 +554,7 @@ export function apply(ctx, config) {
         },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute(args) {
-          const r = bhOps.logs(String(args.service), Number(args.lines) || 50);
+          const r = await bhOps.logs(String(args.service), Number(args.lines) || 50);
           return r.ok ? (r.stdout || "(空)") : `❌ 获取日志失败：${r.stderr || r.stdout || "未知错误"}`;
         },
       }),
@@ -647,7 +647,7 @@ export function apply(ctx, config) {
   async function resolveDrawNode(name) {
     try {
       const base = (cfg().familyUrl || "http://127.0.0.1").trim().replace(/\/+$/, "");
-      const res = await fetch(`${base}/api/dsh/pool`, { cache: "no-store" });
+      const res = await fetch(`${base}/api/dsh/pool`, { cache: "no-store", signal: AbortSignal.timeout(3000) });
       if (!res.ok) return {};
       const j = await res.json();
       const node = (j.nodes || []).find((n) => n.name === name);
@@ -1010,10 +1010,13 @@ export function apply(ctx, config) {
    */
   function handleStatusUi(req, res) {
     if (!bhOps) return sendJson(res, 503, { ok: false, error: "bh 运维未启用" });
-    void bhOps.status().then((r) => {
+    // maxWaitMs：卡片最多同步等 1.2s（`bh status --json` 本身要 6s+），
+    // 有旧快照就先返回旧快照（stale=true），采集在后台继续 —— 避免卡片转圈 6 秒。
+    void bhOps.statusForUi().then((r) => {
       if (!r.ok) return sendJson(res, 502, { ok: false, error: r.error });
       sendJson(res, 200, {
         ok: true,
+        stale: r.stale === true,
         // cell 供卡片决定「哪些服务有编译目标」（native 无 openvino 镜像构建）
         cell: r.status.cell ?? null,
         updatedAt: r.status.updatedAt,
@@ -1082,8 +1085,8 @@ export function apply(ctx, config) {
       }
       if (["start", "stop", "restart"].includes(action)) {
         if (!service) return sendJson(res, 400, { ok: false, error: "缺少 service" });
-        const r = bhOps.action(action, service);
-        return sendJson(res, r.ok ? 200 : 400, r);
+        void bhOps.action(action, service).then((r) => sendJson(res, r.ok ? 200 : 400, r));
+        return;
       }
       if (["build", "build-restart", "update", "up", "deploy"].includes(action)) {
         const r = bhOps.startLongAction(action, service);
@@ -1175,8 +1178,9 @@ export function apply(ctx, config) {
       return;
     }
     if (path === "/dsh-bridge/bh/logs" && req.method === "GET") {
-      const r = bhOps.logs(url.searchParams.get("service") ?? "", url.searchParams.get("lines") ?? "");
-      sendJson(res, r.ok ? 200 : 502, r.ok ? { ok: true, stdout: r.stdout } : { ok: false, error: r.stderr || r.stdout || "获取日志失败" });
+      void bhOps.logs(url.searchParams.get("service") ?? "", url.searchParams.get("lines") ?? "").then((r) => {
+        sendJson(res, r.ok ? 200 : 502, r.ok ? { ok: true, stdout: r.stdout } : { ok: false, error: r.stderr || r.stdout || "获取日志失败" });
+      });
       return;
     }
     if (path === "/dsh-bridge/bh/action" && req.method === "POST") {
@@ -1202,8 +1206,8 @@ export function apply(ctx, config) {
           );
         }
         if (bhOps.action && ["start", "stop", "restart"].includes(action)) {
-          const r = bhOps.action(action, service);
-          return sendJson(res, r.ok ? 200 : 400, r);
+          void bhOps.action(action, service).then((r) => sendJson(res, r.ok ? 200 : 400, r));
+          return;
         }
         if (["build", "update", "up", "deploy", "build-restart"].includes(action)) {
           const r = bhOps.startLongAction(action, service);
