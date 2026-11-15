@@ -420,7 +420,6 @@ export function apply(ctx, config) {
       "bh_build_restart",
       "bh_update",
       "bh_git_commit_push",
-      "bh_dsh_restart",
       "bh_bootstrap",
     ]);
     ctx.on("tools/pre-execute", (exec, next) => {
@@ -568,19 +567,6 @@ export function apply(ctx, config) {
         async execute(args) {
           const op = bhOps.opStatus(String(args.opId));
           return op ? j(op) : "未找到该操作（可能进程已重启，操作记录不持久）。";
-        },
-      }),
-    );
-    ctx.tools.register(
-      defineTool({
-        name: "bh_dsh_restart",
-        description:
-          "重启本机 DSH（DeepSeek Harness）进程：kill 当前 dsh web 并重新拉起，约 10-30 秒后桥接恢复。重启期间当前会话/工具调用会中断，返回后请等待 DSH 恢复。宿主机运维操作，执行前请务必先向用户确认。",
-        parameters: {},
-        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
-        async execute() {
-          const r = bhOps.restartDsh();
-          return r.ok ? `✅ ${r.message}` : `❌ 重启失败：${r.error}`;
         },
       }),
     );
@@ -1066,12 +1052,6 @@ export function apply(ctx, config) {
       const body = readJson(input);
       const action = String(body?.action ?? "");
       const service = String(body?.service ?? "");
-      if (action === "dsh-restart") {
-        return sendJson(res, 200, bhOps.restartDsh());
-      }
-      if (action === "dsh-stop") {
-        return sendJson(res, 200, bhOps.stopDsh());
-      }
       if (action === "git-commit-push") {
         const msg = String(body?.message ?? body?.service ?? "");
         const op = bhOps.startGitCommitPush(msg);
@@ -1188,12 +1168,6 @@ export function apply(ctx, config) {
         const body = input ? readJson(input) : null;
         const action = String(body?.action ?? "");
         const service = String(body?.service ?? "");
-        if (action === "dsh-restart") {
-          return sendJson(res, 200, bhOps.restartDsh());
-        }
-        if (action === "dsh-stop") {
-          return sendJson(res, 200, bhOps.stopDsh());
-        }
         if (action === "git-commit-push") {
           const msg = String(body?.message ?? body?.service ?? "");
           const op = bhOps.startGitCommitPush(msg);

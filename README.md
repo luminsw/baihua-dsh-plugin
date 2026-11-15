@@ -44,9 +44,9 @@
 > 除 `/status` 外的所有接口受 `token` 配置保护（见下文「安全」）。`/dsh-bridge/bh/*`
 > 还会注册同名 DSH 工具（`bh_status` / `bh_start` / `bh_stop` / `bh_restart` /
 > `bh_build` / `bh_update` / `bh_logs` / `bh_op_status` / `bh_build_restart` /
-> `bh_git_commit_push` / `bh_dsh_restart` / `bh_bootstrap`）与绘图工具
+> `bh_git_commit_push` / `bh_bootstrap`）与绘图工具
 > （`baihua_draw` / `baihua_draw_video`），供 agent 直接调用。其中**变更类运维工具**
-> （start/stop/restart、build、update、git 提交推送、DSH 重启、引导安装）挂有
+> （start/stop/restart、build、update、git 提交推送、引导安装）挂有
 > `tools/pre-execute` 审批门：审批策略为 `ask` 时在 DSH 界面弹出确认，为 `never` 时
 > 自动拒绝；只读工具（`bh_status` / `bh_logs` / `bh_op_status`）不受影响。
 
