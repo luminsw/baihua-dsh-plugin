@@ -43,7 +43,8 @@ window.__ModuleLoader__.load({
     };
 
     // 长操作（后台执行，返回 opId）
-    const LONG_ACTIONS = ["build", "build-restart", "update", "up", "deploy"];
+    // 2026-11-15：只剩 build。启动/重启/一键更新已从插件移除（百花由宿主机 bh start 拉起）
+    const LONG_ACTIONS = ["build"];
 
     // 长操作耗时展示：ms → "42s" / "3m 12s" / "1h 5m"
     const fmtDuration = (ms) => {
@@ -201,8 +202,8 @@ window.__ModuleLoader__.load({
         async (action, service, message) => {
           if (busy) return;
           // 危险/耗时操作先确认
-          if (action === "build-restart" || action === "update" || action === "build") {
-            const label = action === "update" ? "一键更新（git pull + 编译 + 部署；编译失败会自动清理缓存重试）" : `编译${service ? " " + service : ""}`;
+          if (action === "build") {
+            const label = `编译${service ? " " + service : ""}（编译会先停掉在跑的服务，完成后需到宿主机 bh start）`;
             if (!window.confirm(`确定执行「${label}」？可能需要数分钟。`)) return;
           }
           setBusy(true);
@@ -392,11 +393,7 @@ window.__ModuleLoader__.load({
               React.createElement("path", { d: "M3 5.5L7 9.5L11 5.5", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" })
             )
           ),
-          React.createElement(
-            "button",
-            { style: btn, disabled: busy, onClick: () => runAction("update"), title: "一键更新：git pull + 编译变更镜像 + 部署；若编译因 NuGet 缓存损坏（NETSDK1064）失败会自动清理缓存重试" },
-            "🔄一键更新"
-          ),
+
           React.createElement(
             "button",
             { style: btn, disabled: busy, onClick: () => openBaihua(setMsg), title: "获取百花 cli-token 并打开 WebUI 首页（自动登录）" },
@@ -406,7 +403,7 @@ window.__ModuleLoader__.load({
         React.createElement(
           "div",
           { style: { fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)", marginTop: 2 } },
-          "百花 k8s 服务运行状态与版本对比，可启停/重启/编译各服务，或一键更新（编译失败自动清理缓存重试）。"
+          "百花服务运行状态与版本对比。这里只负责「看」和「停」：启动/重启请到宿主机执行 bh start（登录自启用 bh autostart）。"
         ),
         open
           ? React.createElement(
@@ -460,28 +457,19 @@ window.__ModuleLoader__.load({
                       React.createElement(
                         "td",
                         { style: td },
-                        // 按钮按 ready 判定（不能用 replicas：native 下恒为 1，
-                        // 已停止的服务会显示成「停止」而不是「启动」）
+                        // 只留「停止」和「编译」：启动/重启不在插件职责内（DSH 拉起服务会被
+                        // 调用方结束连带杀掉），需要时到宿主机 bh start。
                         s.ready > 0
                           ? React.createElement(
                               "button",
                               { style: btn, disabled: busy, onClick: () => runAction("stop", s.name) },
                               "停止"
                             )
-                          : React.createElement(
-                              "button",
-                              { style: btn, disabled: busy, onClick: () => runAction("start", s.name) },
-                              "启动"
-                            ),
-                        React.createElement(
-                          "button",
-                          { style: btn, disabled: busy, onClick: () => runAction("restart", s.name) },
-                          "重启"
-                        ),
+                          : React.createElement("span", { style: { color: "#888" } }, "已停止（宿主机 bh start 启动）"),
                         buildableServices(data).includes(s.name)
                           ? React.createElement(
                               "button",
-                              { style: btn, disabled: busy, onClick: () => runAction("build-restart", s.name) },
+                              { style: btn, disabled: busy, onClick: () => runAction("build", s.name), title: "编译会先停掉服务，完成后到宿主机 bh start" },
                               "编译"
                             )
                           : null

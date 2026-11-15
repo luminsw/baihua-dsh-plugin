@@ -36,19 +36,23 @@
 | GET  | `/dsh-bridge/sessions/{id}/history` | 返回某会话的全部事件（JSON 数组），供回放 |
 | WS   | `/dsh-bridge/stream?sessionId=xxx&cwd=&token=` | 订阅会话事件流（每行一个 JSON 事件）；不带 `sessionId` 时由插件新建会话并先回 `{ kind: "session", sessionId }` |
 | GET  | `/dsh-bridge/bh/status` | 百花服务运维状态（各服务就绪副本/镜像/重启数 + 运行中的长操作；配置 `bhCommand` 后可用，需 token） |
-| POST | `/dsh-bridge/bh/action` | body `{ action, service? }` — `start/stop/restart <svc>`（快速）或 `build [svc]/update/up/deploy`（后台，返回 `opId`） |
+| POST | `/dsh-bridge/bh/action` | body `{ action, service? }` — 只接受 `stop <svc>`（快速）或 `build [svc]`（后台，返回 `opId`）；`start/restart/update` 返回 400 并提示改用宿主机 `bh` |
 | GET  | `/dsh-bridge/bh/ops` / `/dsh-bridge/bh/ops/{opId}` | 长操作列表 / 单个操作进度与最近输出 |
 | GET  | `/dsh-bridge/bh/logs?service=&lines=` | 查看指定服务最近日志 |
 | GET  | `/dsh-bridge/baihua/open-url` | 向百花 WebUI 申请一次性 cli-token 并返回自动登录首页的 URL（供 DSH 设置页卡片「打开百花」入口调用，同源免 token、仅回环 webServer） |
 
 > 除 `/status` 外的所有接口受 `token` 配置保护（见下文「安全」）。`/dsh-bridge/bh/*`
-> 还会注册同名 DSH 工具（`bh_status` / `bh_start` / `bh_stop` / `bh_restart` /
-> `bh_build` / `bh_update` / `bh_logs` / `bh_op_status` / `bh_build_restart` /
-> `bh_git_commit_push` / `bh_bootstrap`）与绘图工具
+> 还会注册同名 DSH 工具（`bh_status` / `bh_stop` / `bh_build` / `bh_logs` /
+> `bh_op_status` / `bh_git_commit_push` / `bh_bootstrap`）与绘图工具
 > （`baihua_draw` / `baihua_draw_video`），供 agent 直接调用。其中**变更类运维工具**
-> （start/stop/restart、build、update、git 提交推送、引导安装）挂有
-> `tools/pre-execute` 审批门：审批策略为 `ask` 时在 DSH 界面弹出确认，为 `never` 时
-> 自动拒绝；只读工具（`bh_status` / `bh_logs` / `bh_op_status`）不受影响。
+> （stop、build、git 提交推送、引导安装）挂有 `tools/pre-execute` 审批门：审批策略为
+> `ask` 时在 DSH 界面弹出确认，为 `never` 时自动拒绝；只读工具
+> （`bh_status` / `bh_logs` / `bh_op_status`）不受影响。
+>
+> **插件不负责启动百花（2026-11-15 起）**：`bh_start` / `bh_restart` / `bh_build_restart` /
+> `bh_update` 已移除。原因是插件经 `child_process` 起的服务是 DSH 的后代进程，DSH 重启/退出
+> 时整棵树可能被 job object 连带杀掉（历史踩过）。启动职责交给宿主机：`bh start`，
+> 或 `bh autostart on` 让百花登录自启。DSH 侧只保留「看状态、看日志、停止、编译」。
 
 ### 首次接入：没有百花源码也能自动下载（`bh_bootstrap`）
 

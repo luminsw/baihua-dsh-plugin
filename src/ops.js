@@ -33,9 +33,13 @@ const STATUS_UI_MAX_WAIT_MS = 1_200;
 const NUGET_CACHE_ERROR_RE = /NETSDK1064|only partially completed|was not found/i;
 
 /** 长操作允许的命令（避免任意命令执行面）。 */
-const LONG_ACTIONS = new Set(["build", "update", "up", "deploy", "build-restart"]);
+// 2026-11-15 收窄：只剩 build —— DSH 不再负责把百花拉起来。
+// 原因：插件经 child_process 起的服务是 DSH 的后代进程，DSH 重启/退出时整棵树可能被
+// job object 连带杀掉（历史踩过）。启动百花交给宿主机 `bh start` / 登录自启，
+// 插件只保留「看状态、看日志、编译、停止」这类不会留下常驻子进程的动作。
+const LONG_ACTIONS = new Set(["build"]);
 /** 快速操作允许的命令。 */
-const QUICK_ACTIONS = new Set(["start", "stop", "restart"]);
+const QUICK_ACTIONS = new Set(["stop"]);
 
 /** 由 bh 可执行文件路径推断百花仓库根：从 bhCommand 所在目录向上逐级找 tools/bh/bh.sh（或 .git）。 */
 function inferRepoRoot(bhCommand) {
@@ -369,7 +373,7 @@ export function createBhOps(config) {
     }
   }
 
-  /** 快速操作：start / stop / restart <svc>（异步，不阻塞事件循环）。 */
+  /** 快速操作：stop <svc>（异步，不阻塞事件循环）。start/restart 已移除：百花由宿主机 bh start 拉起。 */
   async function action(name, service) {
     if (!QUICK_ACTIONS.has(name)) return { ok: false, error: `不支持的快速操作: ${name}` };
     if (!service) return { ok: false, error: `bh ${name} 需要指定服务（server/webui/openvino/postgres/open-webui）` };
@@ -377,182 +381,14 @@ export function createBhOps(config) {
     return { ok: r.ok, code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
   }
 
-  /**
-   * 链式长操作：build-restart <svc> —— 先 bh build <svc>，成功（exit 0）后自动
-   * bh restart <svc>，整个过程记入同一个 op（tail 连续追加）。
-   */
-  function startBuildRestart(service) {
-    const id = `op-${Date.now()}-${++seq}`;
-    const logPath = `/tmp/bh-${id}.log`;
-    const entry = {
-      id,
-      action: "build-restart",
-      service: service ?? "",
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      running: true,
-      exitCode: null,
-      logPath,
-      tail: "",
-    };
-    const append = (s) => {
-      entry.tail = (entry.tail + s).slice(-MAX_TAIL);
-      try {
-        appendFileSync(logPath, s);
-      } catch {
-        /* noop */
-      }
-    };
-    ops.set(id, entry);
-
-    const run = (args, label) =>
-      new Promise((resolve) => {
-        append(`\n===== ${label}（bh ${args.join(" ")}）=====\n`);
-        const [cmd, argv] = bhArgv(args);
-        const child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
-        child.stdout.on("data", (d) => append(d.toString()));
-        child.stderr.on("data", (d) => append(d.toString()));
-        // exit 收尾：bh restart 也会拉起服务进程（继承管道句柄），close 永不触发
-        const settle = (code) => {
-          append(`\n[${label}] exit code: ${code}\n`);
-          try {
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-          } catch {
-            /* noop */
-          }
-          resolve(code);
-        };
-        child.on("exit", settle);
-        child.on("close", settle); // 幂等兜底
-        child.on("error", (err) => {
-          append(`\n[${label}] spawn error: ${err.message}\n`);
-          entry.error = err.message;
-          resolve(-1);
-        });
-      });
-
-    void (async () => {
-      const buildArgs = ["build"];
-      if (service) buildArgs.push(service);
-      let buildCode = await run(buildArgs, "编译");
-      if (buildCode !== 0 && NUGET_CACHE_ERROR_RE.test(entry.tail)) {
-        append("\n[build-restart] 检测到 NuGet 包缓存损坏（NETSDK1064），清理构建缓存后重试…\n");
-        await run(["prune"], "清理构建缓存");
-        buildCode = await run(buildArgs, "编译(重试)");
-      }
-      if (buildCode !== 0) {
-        entry.running = false;
-        entry.finishedAt = new Date().toISOString();
-        entry.exitCode = buildCode;
-        append(`\n[build-restart] 编译失败（exit ${buildCode}），已跳过重启。\n`);
-        return;
-      }
-      const restartArgs = ["restart", service];
-      const restartCode = await run(restartArgs, "滚动重启");
-      // 重建镜像并滚动重启成功后，把 deployment 的 baihua.git-commit 标注同步为当前 HEAD，
-      // 避免 bh status 误报"落后"（deploy/update 会经 deploy_all 打标注，build-restart 不会）。
-      if (restartCode === 0) {
-        await run(["annotate", service], "打标注");
-      }
-      entry.running = false;
-      entry.finishedAt = new Date().toISOString();
-      entry.exitCode = restartCode;
-      append(`\n[build-restart] ${restartCode === 0 ? "完成 ✅" : "重启失败（exit " + restartCode + "）"}。\n`);
-    })();
-
-    return entry;
-  }
 
   /**
-   * 链式一键更新：bh update（git pull + 编译变更镜像 + 部署）。
-   * 若编译阶段因 NuGet 包缓存损坏（NETSDK1064）失败，自动 bh prune 清理 buildkit 缓存后
-   * 重建 4 个 .NET 应用镜像并部署一次（避免 ORIG_HEAD==HEAD 时 changed_images 误跳过构建）。
-   * 说明：bh update 内部按 changed_images 决定重建哪些镜像；这里是"再彻底重建一次"，宁可多构建也不留半失败状态。
+   * 长操作：只剩 build [svc]。返回 opId。
+   * 注意：`bh build` 会先停掉在跑的服务再 publish（exe 被占用），所以编译完服务是停的 ——
+   * 需要时到宿主机执行 `bh start`（DSH 不再代劳）。
    */
-  function startUpdate() {
-    const id = `op-${Date.now()}-${++seq}`;
-    const logPath = `/tmp/bh-${id}.log`;
-    const entry = {
-      id,
-      action: "update",
-      service: "",
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      running: true,
-      exitCode: null,
-      logPath,
-      tail: "",
-    };
-    const append = (s) => {
-      entry.tail = (entry.tail + s).slice(-MAX_TAIL);
-      try {
-        appendFileSync(logPath, s);
-      } catch {
-        /* noop */
-      }
-    };
-    ops.set(id, entry);
-
-    const run = (args, label) =>
-      new Promise((resolve) => {
-        append(`\n===== ${label}（bh ${args.join(" ")}）=====\n`);
-        const [cmd, argv] = bhArgv(args);
-        const child = spawn(cmd, argv, { stdio: ["ignore", "pipe", "pipe"] });
-        child.stdout.on("data", (d) => append(d.toString()));
-        child.stderr.on("data", (d) => append(d.toString()));
-        const settle = (code) => {
-          append(`\n[${label}] exit code: ${code}\n`);
-          try {
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-          } catch {
-            /* noop */
-          }
-          resolve(code);
-        };
-        child.on("exit", settle);
-        child.on("close", settle); // 幂等兜底
-        child.on("error", (err) => {
-          append(`\n[${label}] spawn error: ${err.message}\n`);
-          entry.error = err.message;
-          resolve(-1);
-        });
-      });
-
-    void (async () => {
-      let code = await run(["update"], "一键更新");
-      if (code !== 0 && NUGET_CACHE_ERROR_RE.test(entry.tail)) {
-        append("\n[update] 检测到 NuGet 包缓存损坏（NETSDK1064），清理 buildkit 构建缓存后重建并部署…\n");
-        await run(["prune"], "清理构建缓存");
-        code = await run(["build", "server", "webui"], "重建 .NET 镜像");
-        if (code === 0) code = await run(["deploy"], "部署");
-      }
-      entry.running = false;
-      entry.finishedAt = new Date().toISOString();
-      entry.exitCode = code;
-      append(`\n[update] ${code === 0 ? "完成 ✅" : "失败（exit " + code + "）"}。\n`);
-    })();
-
-    return entry;
-  }
-
-  /** 长操作：build [svc] / update / up [--all] / deploy / build-restart <svc>。返回 opId。 */
   function startLongAction(name, service) {
-    if (!LONG_ACTIONS.has(name)) return { ok: false, error: `不支持的长操作: ${name}` };
-    if (name === "build-restart") {
-      if (!service) return { ok: false, error: "build-restart 需要指定服务（server/webui/openvino）" };
-      const op = startBuildRestart(service);
-      return { ok: true, opId: op.id, action: "build-restart", service };
-    }
-    if (name === "update") {
-      const op = startUpdate();
-      return { ok: true, opId: op.id, action: "update", service: "" };
-    }
-    if (name === "up" && service === "--all") {
-      const op = startLong("up", "--all");
-      return { ok: true, opId: op.id, action: "up", service: "--all" };
-    }
+    if (!LONG_ACTIONS.has(name)) return { ok: false, error: `不支持的长操作: ${name}（只剩 build；启动/更新请用宿主机 bh）` };
     const op = startLong(name, service);
     return { ok: true, opId: op.id, action: name, service: service ?? "" };
   }

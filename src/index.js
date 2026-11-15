@@ -412,13 +412,11 @@ export function apply(ctx, config) {
     // bh_* 运维工具直接经 child_process 执行宿主机操作，不受文件沙箱约束；
     // 对变更类工具挂 ask 门：审批策略为 ask 时在 DSH 界面弹出确认，为 never 时自动拒绝。
     // 只读工具（bh_status / bh_logs / bh_op_status）不受影响。
+    // 2026-11-15：启动/重启类工具已移除（DSH 不再把百花拉起来），所以这里也只剩
+    // 「停止、编译、提交推送、引导安装」这四个变更类动作。
     const HIGH_RISK_TOOLS = new Set([
-      "bh_start",
       "bh_stop",
-      "bh_restart",
       "bh_build",
-      "bh_build_restart",
-      "bh_update",
       "bh_git_commit_push",
       "bh_bootstrap",
     ]);
@@ -459,7 +457,7 @@ export function apply(ctx, config) {
       defineTool({
         name: "bh_status",
         description:
-          "查询百花服务的运行状态（server/webui/openvino/postgres/open-webui 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。包含源码版本对比：git.head（当前仓库 HEAD）与各服务 imageCommit（部署时记录的 commit），upToDate 为 false 说明该服务运行的不是当前 HEAD 构建的镜像（需 bh_build_restart 或 bh_update）。宿主机运维工具，只读。",
+          "查询百花服务的运行状态（server/webui/openvino/postgres/open-webui 各服务的就绪副本数、镜像、重启次数）与运行中的 bh 长操作。包含源码版本对比：git.head（当前仓库 HEAD）与各服务 imageCommit（部署时记录的 commit），upToDate 为 false 说明该服务运行的不是当前 HEAD 构建的镜像（需在宿主机执行 bh build-restart 或 bh update）。宿主机运维工具，只读。",
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute() {
@@ -486,11 +484,14 @@ export function apply(ctx, config) {
         },
       }),
     );
-    for (const name of ["start", "stop", "restart"]) {
+    // 2026-11-15：只保留 stop。start/restart 从插件里删掉 —— 插件经 child_process 起的服务
+    // 是 DSH 的后代进程，DSH 重启/退出时可能被整棵杀掉；启动百花交给宿主机 `bh start`
+    // 或登录自启（bh autostart），DSH 只负责「看」和「停」。
+    for (const name of ["stop"]) {
       ctx.tools.register(
         defineTool({
           name: `bh_${name}`,
-          description: `对百花某个服务执行 ${name}（server/webui/openvino/postgres/open-webui，可省略 bh- 前缀）。宿主机运维操作，执行前请先向用户确认。`,
+          description: `停止百花某个服务（server/webui/openvino/postgres/open-webui，可省略 bh- 前缀）。只停不启：需要重新拉起时到宿主机执行 bh start。宿主机运维操作，执行前请先向用户确认。`,
           parameters: { service: { type: "string", required: true, description: "服务名，如 server / webui / openvino / postgres / open-webui" } },
           output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
           async execute(args) {
@@ -502,24 +503,9 @@ export function apply(ctx, config) {
     }
     ctx.tools.register(
       defineTool({
-        name: "bh_build_restart",
-        description:
-          "编译并重启百花某个服务（编译成功 exit 0 后自动滚动重启，一次操作完成）。参数 service 为 server/webui/openvino（postgres 是上游镜像，不由本仓库构建）。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
-        parameters: { service: { type: "string", required: true, description: "要编译并重启的服务" } },
-        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
-        async execute(args) {
-          const r = bhOps.startLongAction("build-restart", String(args.service));
-          return r.ok
-            ? `已开始编译并重启 ${args.service}（opId=${r.opId}）。用 bh_op_status 查询进度。`
-            : `启动失败：${r.error}`;
-        },
-      }),
-    );
-    ctx.tools.register(
-      defineTool({
         name: "bh_build",
         description:
-          "编译百花镜像（可指定服务 family/ai/vault/webui/openvino，省略则编译全部）。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
+          "编译百花产物（可指定服务 server/webui，省略则全部）。注意：编译会先停掉在跑的服务再 publish，编译完成后服务是停的 —— 需要时到宿主机执行 bh start。耗时数分钟，后台执行，返回 opId 后用 bh_op_status 查询。执行前请先向用户确认。",
         parameters: { service: { type: "string", description: "要编译的服务（可选，默认全部）" } },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute(args) {
@@ -527,19 +513,6 @@ export function apply(ctx, config) {
           return r.ok
             ? `已开始编译（opId=${r.opId}）。用 bh_op_status 查询进度，或用 bh_logs 看服务日志。`
             : `启动失败：${r.error}`;
-        },
-      }),
-    );
-    ctx.tools.register(
-      defineTool({
-        name: "bh_update",
-        description:
-          "百花一键更新：git pull 最新代码 → 编译变更涉及的镜像 → 重新部署（等同 bh update）。耗时可能很长，后台执行，返回 opId。执行前请务必先向用户确认。",
-        parameters: {},
-        output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
-        async execute() {
-          const r = bhOps.startLongAction("update");
-          return r.ok ? `已开始更新（opId=${r.opId}）。用 bh_op_status 查询进度。` : `启动失败：${r.error}`;
         },
       }),
     );
@@ -561,7 +534,7 @@ export function apply(ctx, config) {
     ctx.tools.register(
       defineTool({
         name: "bh_op_status",
-        description: "查询 bh 长操作（编译/更新）的进度与最近输出。参数 opId 来自 bh_build / bh_update 的返回值。",
+        description: "查询 bh 长操作（编译）的进度与最近输出。参数 opId 来自 bh_build 的返回值。",
         parameters: { opId: { type: "string", required: true, description: "操作 ID，如 op-1724..." } },
         output: { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: v }] },
         async execute(args) {
@@ -1025,7 +998,8 @@ export function apply(ctx, config) {
 
   /**
    * UI 操作端点（/dsh-bridge/bh/ui-action，POST）：供 DSH 设置页「百花服务状态」卡片上的
-   * 启动/停止/重启/编译/更新按钮调用。与 /dsh-bridge/bh/action 功能等价，但**免 token**——
+   * 停止/编译按钮调用（启动、重启、一键更新已移除：DSH 不再负责拉起百花）。
+   * 与 /dsh-bridge/bh/action 功能等价，但**免 token**——
    * 靠同源校验防 CSRF（只接受 DSH 页面自身的请求），且仅注册在回环 webServer 上、
    * 不暴露到 lanListen（局域网机器即使知道地址也调不到）。
    */
@@ -1063,12 +1037,19 @@ export function apply(ctx, config) {
             : { ok: true, opId: op.id, action: "git-commit-push", service: msg },
         );
       }
-      if (["start", "stop", "restart"].includes(action)) {
+      if (action === "stop") {
         if (!service) return sendJson(res, 400, { ok: false, error: "缺少 service" });
         void bhOps.action(action, service).then((r) => sendJson(res, r.ok ? 200 : 400, r));
         return;
       }
-      if (["build", "build-restart", "update", "up", "deploy"].includes(action)) {
+      if (action === "start" || action === "restart" || action === "build-restart" || action === "update") {
+        // 明确拒绝而不是静默失败：让调用方知道启动百花已不在插件职责内
+        return sendJson(res, 400, {
+          ok: false,
+          error: `${action} 已从插件移除：请在宿主机执行 bh ${action === "update" ? "update" : action === "build-restart" ? "build-restart <svc>" : action}（或 bh autostart 让它登录自启）`,
+        });
+      }
+      if (["build"].includes(action)) {
         const r = bhOps.startLongAction(action, service);
         return sendJson(res, r.ok ? 200 : 400, r);
       }
@@ -1179,11 +1160,15 @@ export function apply(ctx, config) {
               : { ok: true, opId: op.id, action: "git-commit-push", service: msg },
           );
         }
-        if (bhOps.action && ["start", "stop", "restart"].includes(action)) {
+        if (bhOps.action && action === "stop") {
           void bhOps.action(action, service).then((r) => sendJson(res, r.ok ? 200 : 400, r));
           return;
         }
-        if (["build", "update", "up", "deploy", "build-restart"].includes(action)) {
+        if (action === "start" || action === "restart" || action === "build-restart" || action === "update") {
+          // 启动/重启/一键更新已从插件移除（DSH 不再拉起百花，避免调用方结束连带杀进程）
+          return sendJson(res, 400, { ok: false, error: `${action} 已从插件移除：请在宿主机执行 bh ${action}` });
+        }
+        if (["build"].includes(action)) {
           const r = bhOps.startLongAction(action, service);
           return sendJson(res, r.ok ? 200 : 400, r);
         }
